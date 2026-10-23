@@ -10,6 +10,11 @@ client sends (image -> observation/image, ...):
   prompt      = task instruction
 No other transformation is applied here; normalization and resizing are done by OpenPI's own transforms.
 
+Known LIBERO data quirk (verified by tests/integration/test_simulator.py; see docs/EXPERIMENT_PROTOCOL.md): LIBERO's
+scripts/create_dataset.py stores the observation returned by env.step(actions[t]) as obs[t], i.e. HDF5 obs[t] is the
+state AFTER actions[t] (= sim(states[t+1])). Frames here keep LIBERO's own (obs[t], actions[t]) pairing unchanged; any
+re-alignment is a protocol decision, not a silent loader change.
+
 Known gap (documented in docs/EXPERIMENT_PROTOCOL.md): the official HDF5 images are 128x128 while pi05_libero was
 trained on 256x256 re-rendered images (OpenVLA's regenerated LIBERO data). OpenPI resizes both to 224.
 """
