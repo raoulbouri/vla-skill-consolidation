@@ -107,6 +107,10 @@ Full names, BDDL, init-state and demo paths, demo sha256 values and the exclusio
 - For each task in manifest order: one fresh `OffScreenRenderEnv` at 256 px, `env.seed(7)`; episode *i* uses init
   state `split[i]`. The loop is OpenPI main.py's loop (`clvla.evaluation.run_episode`, unit-tested against a scripted
   env).
+- Determinism: the server runs with `--xla_gpu_deterministic_ops=true --xla_gpu_autotune_level=0`. MuJoCo is
+  deterministic given the init state, and the policy's noise sequence is fixed by its fresh RNG. Short reruns
+  reproduced exactly, but a full rerun differed in 7/100 episodes (tasks 35 and 28), so a residual source remains; see
+  `docs/SETUP_REPORT.md` §6.
 - Outputs go to `outputs/baseline/<UTC>_<name>/`:
   - `run_metadata.json`: resolved config, protocol and manifest hashes, seeds, checkpoint fingerprint, git SHAs of the
     project, OpenPI and LIBERO with dirty flags, package versions, GPU, server command, init-state indices, and the
@@ -161,12 +165,31 @@ as-is, as LIBERO's own lifelong-learning baselines do. Option (b) should be docu
   plan is a success matrix R[i, j] = success on task j after learning task i, plus forward/backward transfer and
   forgetting.
 
-## 8. Baseline result
+## 8. Baseline result and what it implies for the task set
 
-See `docs/SETUP_REPORT.md` and `outputs/baseline/` (run id recorded there).
+The canonical numbers are in `docs/SETUP_REPORT.md`. A pilot run without deterministic XLA flags
+(`outputs/baseline/20261023T042043Z_pi05_libero_official`) gave 14/100 successes:
+
+| Task | Successes |
+|---|---|
+| 56 butter → tray | 10/10 |
+| 28 close drawer | 3/10 |
+| 63 stack bowls → tray | 1/10 |
+| the other 7 tasks | 0/10 |
+
+The in-distribution control (`scripts/control_check.sh`, libero_spatial, 2 init states × 10 tasks) scored 20/20
+with this pipeline and 20/20 with OpenPI's unmodified `main.py`. So the low LIBERO-90 success reflects the policy,
+not the infrastructure.
+
+**Decision needed (not acted on):** task 56 is already solved zero-shot because it is libero_object's butter
+pick-and-place with a tray in place of the basket. It leaves no room to measure learning, although it can still
+measure forgetting. Two options: keep it as a deliberate "already-known" control task, or replace it under manifest
+v1.1. A replacement could require baseline success ≤ 20% on the selection init states (0–9) as an extra rule R8.
+Whatever is chosen, measuring on selection states keeps the test states (10–49) clean.
 
 ## 9. Change log
 
 | Date | Item | Change |
 |---|---|---|
 | 2026-10-22 | protocol 1.0.0, manifest 1.0.0 | initial freeze |
+| 2026-10-23 | evaluation infrastructure (not protocol) | policy server runs with deterministic XLA flags; the pilot baseline (default flags) is kept as a record but superseded by `*_pi05_libero_official_det` |

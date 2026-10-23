@@ -94,3 +94,9 @@ CPU-only machines: use `cpu`; the GPU stages are skipped.
 - **Blackwell GPUs:** jax 0.5.3 runs on the RTX 5090 because the locked `nvidia-cuda-nvcc-cu12` 12.9 provides an
   sm_120-capable `ptxas`. No system CUDA toolkit is needed.
 - **Policy server binding:** OpenPI's `serve_policy.py` binds `0.0.0.0`; the client connects to `127.0.0.1`.
+- **GPU nondeterminism:** with default XLA flags, each server process picks GPU kernels by autotuning. Actions are
+  bit-identical within a process but differ by about 1e-4 between processes, and closed-loop rollouts amplify that
+  into different episode outcomes. In a measured case, the same 3 episodes of task 28 gave 2/3 and then 0/3.
+  `serve_policy.sh` therefore sets `XLA_FLAGS=$CLVLA_XLA_FLAGS`, which defaults to
+  `--xla_gpu_deterministic_ops=true --xla_gpu_autotune_level=0`. With it, single inferences are bit-identical across
+  processes, but a full 100-episode rerun still differed in 7 episodes (see SETUP_REPORT §6). It costs about 35% speed. The flags are recorded in each run's metadata.
