@@ -8,8 +8,8 @@ PORT="${1:-$CLVLA_SERVER_PORT}"
 CKPT="$OPENPI_DATA_HOME/openpi-assets/checkpoints/pi05_libero"
 "$ROOT/scripts/gpu_guard.sh" "$CLVLA_GPU"
 [ -f "$CKPT/params/_METADATA" ] || { echo "checkpoint missing: $CKPT (run scripts/validate_assets.py)"; exit 1; }
-export CUDA_VISIBLE_DEVICES="$CLVLA_GPU" XLA_PYTHON_CLIENT_PREALLOCATE=false
+export CUDA_VISIBLE_DEVICES="$CLVLA_GPU" XLA_PYTHON_CLIENT_PREALLOCATE=false XLA_FLAGS="${CLVLA_XLA_FLAGS:-}"
 cd "$OPENPI_DIR"
-echo "[serve_policy] openpi $(git rev-parse HEAD) config=pi05_libero dir=$CKPT gpu=$CLVLA_GPU port=$PORT"
+echo "[serve_policy] openpi $(git rev-parse HEAD) config=pi05_libero dir=$CKPT gpu=$CLVLA_GPU port=$PORT XLA_FLAGS='$XLA_FLAGS'"
 exec "$CLVLA_POLICY_PY" scripts/serve_policy.py --env LIBERO --port "$PORT" \
   policy:checkpoint --policy.config pi05_libero --policy.dir "$CKPT"

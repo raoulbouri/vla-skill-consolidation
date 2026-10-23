@@ -3,7 +3,7 @@ CLVLA_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -f "$CLVLA_ROOT/.env" ]; then _envfile="$CLVLA_ROOT/.env"; else _envfile="$CLVLA_ROOT/.env.example"; fi
 set -a
 # shellcheck disable=SC1090
-source <(sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' "$_envfile")
+source <(sed -e 's/^[[:space:]]*#.*$//' -e 's/[[:space:]]\+#[^"]*$//' -e '/^[[:space:]]*$/d' "$_envfile")
 set +a
 unset _envfile
 export CLVLA_ROOT

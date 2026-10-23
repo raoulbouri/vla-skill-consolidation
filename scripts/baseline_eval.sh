@@ -24,6 +24,6 @@ for _ in $(seq 1 300); do
 done
 curl -sf "http://127.0.0.1:$PORT/healthz" >/dev/null || { echo "policy server not healthy"; exit 1; }
 export CLVLA_SERVER_INFO
-CLVLA_SERVER_INFO=$(printf '{"command": "scripts/serve_policy.sh %s", "log": "%s", "openpi_commit": "%s", "config": "pi05_libero", "checkpoint_dir": "%s"}' \
-  "$PORT" "$SLOG" "$(git -C "$OPENPI_DIR" rev-parse HEAD)" "$OPENPI_DATA_HOME/openpi-assets/checkpoints/pi05_libero")
+CLVLA_SERVER_INFO=$(printf '{"command": "scripts/serve_policy.sh %s", "log": "%s", "openpi_commit": "%s", "config": "pi05_libero", "checkpoint_dir": "%s", "xla_flags": "%s"}' \
+  "$PORT" "$SLOG" "$(git -C "$OPENPI_DIR" rev-parse HEAD)" "$OPENPI_DATA_HOME/openpi-assets/checkpoints/pi05_libero" "${CLVLA_XLA_FLAGS:-}")
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 "$ROOT/scripts/py-sim" "$ROOT/scripts/run_eval.py" --host 127.0.0.1 --port "$PORT" "$@"
