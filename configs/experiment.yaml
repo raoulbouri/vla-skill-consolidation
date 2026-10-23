@@ -1,0 +1,68 @@
+# Experiment contract for "How Should Vision-Language-Action Policies Continually Learn New Skills?"
+#
+# Everything under `protocol` is FROZEN: its canonical sha256 is stored in `protocol_sha256` and clvla.config refuses
+# to load the file if they disagree. To change a frozen setting deliberately: edit, bump protocol_version, run
+# `scripts/py-policy scripts/freeze_config.py`, and log the change in docs/EXPERIMENT_PROTOCOL.md ("Change log").
+# Only the `evaluation` section may vary between runs (it is recorded in every run's metadata).
+#
+# ${VAR} references are expanded from the environment (env.sh / .env); an undefined variable is an error.
+
+schema_version: 1
+experiment_name: clvla-pi05libero-libero90-seq10
+
+protocol:
+  protocol_version: "1.0.0"
+  task_manifest: configs/task_manifest.yaml
+
+  seeds:
+    global: 7    # Python/NumPy seeding of clvla scripts; also used to derive sub-seeds (clvla.config.derive_seed)
+    eval: [7]    # evaluation seeds; seed 7 = OpenPI examples/libero/main.py default
+
+  checkpoint:   # official pretrained pi0.5-LIBERO; never substitute pi05_droid / pi0 / self-trained weights
+    openpi_config: pi05_libero
+    uri: gs://openpi-assets/checkpoints/pi05_libero
+    local_dir: ${OPENPI_DATA_HOME}/openpi-assets/checkpoints/pi05_libero
+    norm_stats_asset_id: physical-intelligence/libero   # bundled assets/<id>/norm_stats.json is used, never recomputed
+    lock_file: configs/checkpoint.lock.json
+
+  policy:       # must match OpenPI pi05_libero (Pi0Config(pi05=True, action_horizon=10)) and main.py
+    action_dim: 7          # LIBERO OSC delta pose (6) + gripper (1); model output padded dims are dropped by LiberoOutputs
+    state_dim: 8           # eef pos (3) + eef axis-angle (3) + gripper qpos (2)
+    action_horizon: 10
+    replan_steps: 5        # main.py: execute the first 5 actions of each chunk, then re-query
+    resize_size: 224       # main.py: resize_with_pad to 224 before sending
+
+  simulator:    # OpenPI examples/libero/main.py at the pinned commit
+    camera_resolution: 256      # LIBERO_ENV_RESOLUTION ("resolution used to render training data")
+    num_steps_wait: 10          # dummy steps while objects settle
+    max_steps: 400              # main.py value for libero_90 ("longest training demo has 373 steps")
+    dummy_action: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0]
+    env_seed: 7                 # env.seed(seed), as main.py
+
+  data:
+    root: ${LIBERO_DATA_ROOT}   # contains libero_90/<task>_demo.hdf5 (official LIBERO demos)
+    suite: libero_90
+    demos_per_task: 50
+    image_size: 128             # official HDF5 render size (checkpoint was trained on 256x256 re-renders; see protocol doc)
+    lock_file: configs/dataset.lock.json
+
+  splits:
+    # Demonstrations (behavior cloning): positional indices into demo_0..demo_49 (numeric order).
+    train_demo_indices: {start: 0, stop: 45}
+    val_demo_indices: {start: 45, stop: 50}
+    # Evaluation init states (official LIBERO init_files, 50 per task). OpenPI evaluates on all 50; this project keeps
+    # 0-9 for any model/checkpoint selection and reports on 10-49 only.
+    num_init_states: 50
+    selection_init_states: {start: 0, stop: 10}
+    test_init_states: {start: 10, stop: 50}
+
+protocol_sha256: a3d55cd82c5a88e8117b6e296d7556310136d5223c8a181d7aa2aff910a59f5f
+
+evaluation:     # run-time settings (not frozen; recorded per run)
+  episodes_per_task: 10        # first N init states of the chosen split, in order
+  init_state_split: test
+  save_videos: false
+  host: 127.0.0.1
+  port: 8000
+
+output_root: ${CLVLA_OUTPUT_ROOT}

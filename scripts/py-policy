@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Run Python in the OpenPI policy env (py3.11) with clvla on the path. CPU-only unless the caller sets CLVLA_USE_GPU=1.
+set -euo pipefail
+source "$(cd "$(dirname "$0")/.." && pwd)/env.sh"
+export PYTHONPATH="$CLVLA_ROOT/src:$CLVLA_ROOT/tests${PYTHONPATH:+:$PYTHONPATH}"
+if [ "${CLVLA_USE_GPU:-0}" = "1" ]; then
+  export CUDA_VISIBLE_DEVICES="$CLVLA_GPU" XLA_PYTHON_CLIENT_PREALLOCATE=false
+else
+  export CUDA_VISIBLE_DEVICES="" JAX_PLATFORMS=cpu
+fi
+exec "$CLVLA_POLICY_PY" "$@"

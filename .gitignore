@@ -1,0 +1,23 @@
+# Environments and local config
+.env
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.libero/
+# Large assets and run artifacts: never commit
+outputs/
+logs/
+tmp/
+data/
+checkpoints/
+*.hdf5
+*.h5
+*.mp4
+*.npz
+*.pt
+*.pth
+*.safetensors
+*.ocdbt
+wandb/

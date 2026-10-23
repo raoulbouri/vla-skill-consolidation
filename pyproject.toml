@@ -1,0 +1,35 @@
+[project]
+name = "clvla"
+version = "0.1.0"
+description = "Continual-learning infrastructure for pi0.5-LIBERO on a custom LIBERO-90 task sequence"
+requires-python = ">=3.8"
+# clvla must import in BOTH environments:
+#   policy env = third_party/openpi/.venv               (Python 3.11, OpenPI/JAX)
+#   sim env    = third_party/openpi/examples/libero/.venv (Python 3.8, LIBERO/robosuite)
+# so it depends only on packages present in both. It is used via PYTHONPATH=src (see scripts/py-policy,
+# scripts/py-sim); it is NOT installed into either venv so `uv sync` in OpenPI never removes it.
+dependencies = ["numpy", "pyyaml"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py38"
+src = ["src", "tests", "scripts"]
+extend-exclude = ["third_party"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+ignore = ["UP006", "UP007", "UP035", "UP045", "E501"]  # typing.List/Optional: must run on py3.8; line length: ruff format
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "policy_env: needs the OpenPI policy environment (Python 3.11, openpi importable); CPU only",
+    "sim: needs the LIBERO simulator environment (Python 3.8, libero/robosuite/mujoco, EGL)",
+    "data: needs the real LIBERO-90 demonstration HDF5 files",
+    "checkpoint: needs the downloaded pi05_libero checkpoint",
+    "gpu: needs a free GPU (runs on CLVLA_GPU only)",
+    "server: starts the official OpenPI policy server in a subprocess",
+    "slow: takes more than ~1 minute",
+]

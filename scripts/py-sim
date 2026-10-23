@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Run Python in the LIBERO simulator env (py3.8) with clvla + LIBERO on the path. EGL renders on CLVLA_GPU only.
+set -euo pipefail
+source "$(cd "$(dirname "$0")/.." && pwd)/env.sh"
+export PYTHONPATH="$CLVLA_ROOT/src:$CLVLA_ROOT/tests:$LIBERO_DIR${PYTHONPATH:+:$PYTHONPATH}"
+export CUDA_VISIBLE_DEVICES="$CLVLA_GPU" MUJOCO_EGL_DEVICE_ID="$CLVLA_GPU"
+exec "$CLVLA_SIM_PY" "$@"
