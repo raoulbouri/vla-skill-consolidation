@@ -55,7 +55,11 @@ def main() -> int:
     ds_lock = load_lock(cfg.resolve(cfg.data.lock_file))
     root = Path(cfg.data.root)
     rep = verify_tree(
-        root, ds_lock["files"], "LIBERO-90 demos (all 90, sizes)", deep=args.deep_all, check_partials=False
+        root,
+        ds_lock["files"],
+        f"LIBERO-90 demos (all 90, {'sha256' if args.deep_all else 'sizes'})",
+        deep=args.deep_all,
+        check_partials=False,
     )
     rep.errors += [f"libero_90/{p}: leftover partial download file" for p in find_partial_files(root / "libero_90")]
     reports.append(rep)
