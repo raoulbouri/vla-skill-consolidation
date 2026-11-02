@@ -1,0 +1,69 @@
+# PROPOSED protocol v1.1 -- NOT FROZEN. clvla.config refuses to load it (placeholder hash) until it is reviewed,
+# copied over configs/experiment.yaml deliberately (or loaded explicitly), re-frozen with scripts/freeze_config.py and
+# logged in docs/EXPERIMENT_PROTOCOL.md. The frozen v1.0 file stays authoritative until then.
+#
+# Differences from v1.0 (see docs/NEXT_EXPERIMENTS.md):
+#   * task_manifest -> configs/task_manifest_v1.1.yaml (task 56 moved to a control; R8 replacement; freeze after screening)
+#   * demonstrations -> processed, deployment-aligned 256 px re-renders (configs/datasets/processed_v1.yaml)
+#   * init states: 0-9 selection, 10-19 development (already inspected by the v1.0 pilot/baselines),
+#     20-49 reporting (`test_init_states`), never used for any decision
+#   * training settings live in configs/training/*.yaml (to be folded into the protocol once approved)
+
+schema_version: 1
+experiment_name: clvla-pi05libero-libero90-seq10
+
+protocol:
+  protocol_version: "1.1.0-proposed"
+  task_manifest: configs/task_manifest_v1.1.yaml
+
+  seeds:
+    global: 7
+    eval: [7]
+
+  checkpoint:
+    openpi_config: pi05_libero
+    uri: gs://openpi-assets/checkpoints/pi05_libero
+    local_dir: ${OPENPI_DATA_HOME}/openpi-assets/checkpoints/pi05_libero
+    norm_stats_asset_id: physical-intelligence/libero
+    lock_file: configs/checkpoint.lock.json
+
+  policy:
+    action_dim: 7
+    state_dim: 8
+    action_horizon: 10
+    replan_steps: 5
+    resize_size: 224
+
+  simulator:
+    camera_resolution: 256
+    num_steps_wait: 10
+    max_steps: 400
+    dummy_action: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0]
+    env_seed: 7
+
+  data:
+    root: ${LIBERO_DATA_ROOT}           # raw source (read-only); training reads the processed version below
+    suite: libero_90
+    demos_per_task: 50
+    image_size: 128                     # raw HDF5 size; processed training images are 256 (processed_v1.yaml)
+    lock_file: configs/dataset.lock.json
+    processed_version: libero90_aligned256_v1
+
+  splits:
+    train_demo_indices: {start: 0, stop: 45}
+    val_demo_indices: {start: 45, stop: 50}
+    num_init_states: 50
+    selection_init_states: {start: 0, stop: 10}
+    development_init_states: {start: 10, stop: 20}
+    test_init_states: {start: 20, stop: 50}
+
+protocol_sha256: PROPOSED-NOT-FROZEN
+
+evaluation:
+  episodes_per_task: 10
+  init_state_split: selection
+  save_videos: false
+  host: 127.0.0.1
+  port: 8000
+
+output_root: ${CLVLA_OUTPUT_ROOT}

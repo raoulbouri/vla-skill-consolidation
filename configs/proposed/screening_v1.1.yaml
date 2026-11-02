@@ -1,0 +1,13 @@
+# PROPOSED (not frozen): R8 screening for task manifest v1.1.
+# R8: the official pi05_libero must succeed on at most 2/10 episodes on selection init states 0-9.
+# Screening runs only the unmodified checkpoint (scripts/screen_tasks.sh) and never touches init states >= 10.
+r8_max_successes: 2
+episodes_per_task: 10
+init_states: {start: 0, stop: 10}        # selection split only
+control_tasks: [56]                       # known-skill control, removed from the primary sequence in v1.1
+retained_tasks: [78, 84, 16, 35, 42, 28, 3, 89, 63]   # v1.0 minus 56: screened for an R8 AUDIT (flag, never auto-swap)
+# Candidates = LIBERO-90 tasks that passed v1.0 rules R1-R4 (not in the v1.0 manifest's `selection.excluded`) and lie in
+# a scene not used by the retained tasks (R5): LIVING_ROOM_SCENE3 (freed by 56) and KITCHEN_SCENE1 (unused by v1.0).
+# 55/57/58/59 keep the removed task's category (container); 6-10 would change the R6 quota and need
+# --allow-category-change in scripts/propose_manifest_v1_1.py.
+replacement_candidates: [55, 57, 58, 59, 6, 7, 8, 9, 10]

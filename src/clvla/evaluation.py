@@ -131,6 +131,13 @@ def run_episode(
     )
 
 
+def check_split_allowed(kind: str, split: str, confirmatory: bool = False) -> None:
+    """Smoke / fine-tune decisions may only use selection init states; specialist reporting needs --confirmatory."""
+    if split == "test" and (kind in ("smoke", "finetune") or (kind == "specialist_eval" and not confirmatory)):
+        raise ValueError(f"kind {kind!r} may not use the test split (use selection; specialist_eval needs "
+                         "--confirmatory for reporting runs)")
+
+
 def make_libero_env(bddl_path: str, resolution: int, seed: int):
     """Official LIBERO OffScreenRenderEnv exactly as main.py builds it (sim env only)."""
     from libero.libero.envs import OffScreenRenderEnv

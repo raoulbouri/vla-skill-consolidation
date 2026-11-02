@@ -25,6 +25,7 @@ from clvla.evaluation import (
     EpisodeResult,
     aggregate,
     append_episode_result,
+    check_split_allowed,
     make_libero_env,
     run_episode,
     write_episode_results,
@@ -60,7 +61,14 @@ def parse_args():
     ap.add_argument("--save-videos", action="store_true", default=None)
     ap.add_argument("--host")
     ap.add_argument("--port", type=int)
-    ap.add_argument("--kind", default="baseline", choices=["baseline", "smoke"])
+    ap.add_argument("--kind", default="baseline",
+                    choices=["baseline", "smoke", "finetune", "specialist_eval", "teacher_eval"])
+    ap.add_argument("--init-source", default="official",
+                    help="'official' (LIBERO init files, --split) or 'demos:<profile>' (initial states of that split "
+                         "profile's HELD-OUT demos, e.g. demos:n25 = demo_25..49, read from the processed HDF5)")
+    ap.add_argument("--data-config", default=str(ROOT / "configs/datasets/processed_v1.yaml"))
+    ap.add_argument("--confirmatory", action="store_true",
+                    help="allow the test split for kind specialist_eval (reporting runs only; never for smoke decisions)")
     ap.add_argument("--name", default="pi05_libero_official")
     ap.add_argument("--positions", help="comma-separated manifest positions (debugging only; recorded)")
     return ap.parse_args()
@@ -104,8 +112,30 @@ def main() -> int:
     rep.raise_if_failed()
     resolved = resolve_tasks(manifest)
     positions = [int(p) for p in args.positions.split(",")] if args.positions else list(range(len(resolved)))
-    split = cfg.splits.test_init_states if ev.init_state_split == "test" else cfg.splits.selection_init_states
-    indices = init_state_indices(split, ev.episodes_per_task)
+    # Smoke / fine-tune decisions only ever look at selection init states (0-9). Test states (10-49 in protocol v1.0;
+    # 10-19 already inspected, 20-49 proposed reporting set in v1.1) need an explicit confirmatory specialist run.
+    demo_profile = args.init_source.split(":", 1)[1] if args.init_source.startswith("demos:") else None
+    if args.init_source != "official" and not demo_profile:
+        sys.exit(f"--init-source {args.init_source!r}: use 'official' or 'demos:<profile>'")
+    demo_source = {}
+    if demo_profile:
+        # Held-out demonstrations' initial states (never official LIBERO init states, never a training demo).
+        import yaml
+
+        from clvla.lerobot_convert import resolve_split
+
+        dcfg = yaml.safe_load(Path(args.data_config).read_text())
+        _, held_out = resolve_split(dcfg, cfg, demo_profile)
+        indices = held_out[: ev.episodes_per_task]
+        proot = Path(os.environ[dcfg["output"]["processed_root_env"]]) / dcfg["version"] / "hdf5"
+        demo_source = {"profile": demo_profile, "processed_version": dcfg["version"], "processed_dir": str(proot)}
+    else:
+        try:
+            check_split_allowed(args.kind, ev.init_state_split, args.confirmatory)
+        except ValueError as e:
+            sys.exit(str(e))
+        split = cfg.splits.test_init_states if ev.init_state_split == "test" else cfg.splits.selection_init_states
+        indices = init_state_indices(split, ev.episodes_per_task)
 
     run_dir = make_run_dir(cfg.output_root, args.kind, args.name)
     run_id = run_dir.name
@@ -126,6 +156,8 @@ def main() -> int:
                 "port": ev.port,
             },
             "init_state_indices": indices,
+            "init_source": args.init_source,
+            "init_source_detail": demo_source or None,
             "task_positions": positions,
             "rerun_of": args.from_run,
             "policy_server": server_info,
@@ -144,7 +176,13 @@ def main() -> int:
             rt = resolved[pos]
             import torch
 
-            init_states = torch.load(str(rt.init_states_path))
+            if demo_profile:
+                import h5py
+
+                with h5py.File(str(Path(demo_source["processed_dir"]) / f"{rt.spec.name}_demo.hdf5"), "r") as f:
+                    init_states = {i: np.asarray(f["data"][f"demo_{i}"]["states"][0]) for i in indices}
+            else:
+                init_states = torch.load(str(rt.init_states_path))
             env = make_libero_env(rt.bddl_path, cfg.simulator.camera_resolution, seed)
             try:
                 for ep_i, init_idx in enumerate(indices):
@@ -169,7 +207,7 @@ def main() -> int:
                         vdir = run_dir / "videos"
                         vdir.mkdir(exist_ok=True)
                         video = str(
-                            vdir / f"p{pos}_t{rt.spec.libero_90_index:02d}_init{init_idx:02d}_s{seed}_"
+                            vdir / f"p{pos}_t{rt.spec.libero_90_index:02d}_{'demo' if demo_profile else 'init'}{init_idx:02d}_s{seed}_"
                             f"{'success' if out.success else 'failure'}.mp4"
                         )
                         imageio.mimwrite(video, [np.asarray(f) for f in out.frames], fps=10)
