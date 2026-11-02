@@ -1,0 +1,41 @@
+# 25-demo task teachers: one LoRA fine-tune per manifest task, each from the ORIGINAL pi05_libero checkpoint.
+# Data: split profile n25 = train demo_0..24; demo_25..49 held out (val loss here; their initial states are the
+# evaluation set, scripts/eval_teachers_heldout.sh). Same budget for every task.
+# Recipe measured on aims (RTX 4090, 24 GB, 2026-10-29): the stock LoRA recipe (SigLIP trainable) runs out of memory even
+# at batch 4; SigLIP frozen at batch 8 peaks at 9.7 GiB, 1.63 s/step (XLA autotune off: aims' XLA crashes in autotuning).
+# 500-step variant (2026-10-29): with 2000 steps, held-out val loss rose from step 500 on (t78 0.0190 -> 0.0226 -> 0.0248,
+# t84 0.0296 -> 0.0378 -> 0.0422 at 500/1000/1500) while train loss kept falling. Same recipe, budget 500 steps.
+schema_version: 1
+name: teacher-n25-s500
+kind: specialists
+budget_approved: true
+manifest: configs/task_manifest.yaml
+control_tasks:
+- 56
+data_config: configs/datasets/processed_v1.yaml
+data_split_profile: n25
+model:
+  base_openpi_config: pi05_libero
+  mode: lora
+  paligemma_variant: gemma_2b_lora
+  action_expert_variant: gemma_300m_lora
+  lora_b_init: zeros
+  freeze_vision_encoder: true
+optim:
+  peak_lr: 5.0e-05
+  warmup_steps: 100
+  decay_steps: 500
+  decay_lr: 5.0e-06
+  clip_gradient_norm: 1.0
+train:
+  num_steps: 500
+  batch_size: 8
+  num_workers: 2
+  log_interval: 50
+  val_interval: 100
+  val_max_batches: 50
+  save_interval: 500
+gates:
+  max_loss: 1.0e4
+runtime:
+  xla_mem_fraction: 0.92

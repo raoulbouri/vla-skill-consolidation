@@ -1,0 +1,41 @@
+# Action-expert fine-tuning, 25 demos, 250 steps. Gemma 2B + SigLIP frozen; the 300M action expert (+ action
+# projections, time MLP) fully trained from the ORIGINAL pi05_libero. Train demo_0..24; held out demo_25..49 (25).
+# Budget from the t42 pilots (2026-10-30): held-out val loss bottoms out by ~250 steps (10 demos) and plateaus
+# from 250 (25 demos). The LR schedule matches the pilots' first 250 steps (warmup 100, cosine horizon 2000), so
+# step 250 is the setting whose val loss was measured. Logged to W&B rahulbouri16/IRL-final-project.
+schema_version: 1
+name: expert300m-25demos-s250
+kind: specialists
+budget_approved: true
+manifest: configs/task_manifest.yaml
+control_tasks:
+- 56
+data_config: configs/datasets/processed_v1.yaml
+data_split_profile: n25
+wandb:
+  entity: rahulbouri16
+  project: IRL-final-project
+model:
+  base_openpi_config: pi05_libero
+  mode: expert
+  paligemma_variant: gemma_2b
+  action_expert_variant: gemma_300m
+  freeze_vision_encoder: true
+optim:
+  peak_lr: 5.0e-05
+  warmup_steps: 100
+  decay_steps: 2000
+  decay_lr: 5.0e-06
+  clip_gradient_norm: 1.0
+train:
+  num_steps: 250
+  batch_size: 8
+  num_workers: 2
+  log_interval: 10
+  val_interval: 50
+  val_max_batches: 50
+  save_interval: 250
+gates:
+  max_loss: 10000.0
+runtime:
+  xla_mem_fraction: 0.92

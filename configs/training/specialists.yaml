@@ -1,0 +1,35 @@
+# Independent task specialists: one LoRA fine-tune per task, each from the ORIGINAL pi05_libero checkpoint.
+# The step budget below is a PROPOSAL. scripts/train_specialists.py refuses --execute until budget_approved: true,
+# and the same budget must be used for every task before learnability is compared.
+schema_version: 1
+name: spec-v1
+kind: specialists              # -> outputs/specialists/<stamp>_spec-v1-t<idx>/
+budget_approved: false         # set true only after reviewing the smoke run (step time, memory, loss curves)
+manifest: configs/task_manifest.yaml   # explicit manifest; its content hash is checked and recorded per run
+control_tasks: [56]            # known-skill control (high zero-shot success): reported separately from acquisition
+data_config: configs/datasets/processed_v1.yaml
+model:
+  base_openpi_config: pi05_libero
+  mode: lora
+  paligemma_variant: gemma_2b_lora
+  action_expert_variant: gemma_300m_lora
+  lora_b_init: zeros
+  freeze_vision_encoder: false
+optim:
+  peak_lr: 5.0e-5
+  warmup_steps: 100
+  decay_steps: 2000
+  decay_lr: 5.0e-6
+  clip_gradient_norm: 1.0
+train:
+  num_steps: 2000              # PROPOSED: ~6800 train frames/task -> ~2.4 epochs at batch 8; revise from smoke timing
+  batch_size: 8
+  num_workers: 2
+  log_interval: 50
+  val_interval: 250
+  val_max_batches: null
+  save_interval: 500           # bounded: OpenPI keeps only the latest checkpoint (max_to_keep=1)
+gates:
+  max_loss: 1.0e4
+runtime:
+  xla_mem_fraction: 0.85

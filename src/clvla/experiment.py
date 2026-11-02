@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
-RUN_KINDS = ("baseline", "finetune", "continual", "smoke")
+RUN_KINDS = ("baseline", "finetune", "continual", "smoke", "specialists", "specialist_eval", "screening", "teacher_eval")
 REQUIRED_METADATA = (
     "run_id",
     "kind",

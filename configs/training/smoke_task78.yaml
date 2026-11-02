@@ -1,0 +1,36 @@
+# Bounded single-task training smoke (infrastructure check, not a result).
+# Pass criteria (docs/NEXT_EXPERIMENTS.md): data/training paths work, finite loss and gradients, trainable params
+# change and frozen ones do not, checkpoint reload + inference works, simulator integration has no infra errors.
+# Task success is NOT required to improve after 100 steps.
+schema_version: 1
+name: smoke
+kind: finetune                 # -> outputs/finetune/<stamp>_smoke-t078/
+task:
+  libero_90_index: 78          # manifest v1.0 position 0
+  manifest_position: 0
+data_config: configs/datasets/processed_v1.yaml
+model:
+  base_openpi_config: pi05_libero          # architecture/transforms of the official checkpoint; weights: local pi05_libero
+  mode: lora                               # full fine-tuning (> 70 GB per OpenPI README) is not allowed on the 32 GB GPU
+  paligemma_variant: gemma_2b_lora         # OpenPI stock LoRA (rank 16, alpha 16) on the VLM
+  action_expert_variant: gemma_300m_lora   # OpenPI stock LoRA (rank 32, alpha 32) on the action expert
+  lora_b_init: zeros                       # zeros = step-0 model equals pi05_libero exactly; openpi_default = N(0, 0.01)
+  freeze_vision_encoder: false             # false = OpenPI stock LoRA filter (SigLIP + projection heads stay trainable)
+optim:                                     # AdamW(b1 .9, b2 .95, wd 1e-10) as pi05_libero
+  peak_lr: 5.0e-5                          # pi05_libero's peak (and final) LR
+  warmup_steps: 10                         # pi05_libero uses 10k warmup, which would keep LR ~5e-7 for a 100-step smoke
+  decay_steps: 100
+  decay_lr: 5.0e-5                         # constant after warmup, as pi05_libero (peak_lr == decay_lr)
+  clip_gradient_norm: 1.0
+train:
+  num_steps: 100
+  batch_size: 8                            # small; OpenPI default is 32/256
+  num_workers: 2
+  log_interval: 10
+  val_interval: 50                         # validation (demos 45-49 only) after steps 50 and 100
+  val_max_batches: null                    # null = one full pass over the validation repo (drop_last)
+  save_interval: 100                       # one checkpoint (OpenPI keeps max_to_keep=1)
+gates:
+  max_loss: 1.0e4
+runtime:
+  xla_mem_fraction: 0.85
