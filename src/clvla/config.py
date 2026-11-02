@@ -154,6 +154,7 @@ class SplitSpec:
     val_demo_indices: List[int]
     selection_init_states: List[int]
     test_init_states: List[int]
+    development_init_states: Optional[List[int]] = None  # optional (proposed protocol v1.1): inspected pilot states
 
 
 @dataclasses.dataclass(frozen=True)
@@ -285,6 +286,11 @@ def parse_experiment_config(
         raise ConfigError("protocol.splits: train_demo_indices and val_demo_indices overlap")
     if set(splits.selection_init_states) & set(splits.test_init_states):
         raise ConfigError("protocol.splits: selection_init_states and test_init_states overlap")
+    if "development_init_states" in sp:
+        dev = _range_list(sp, "development_init_states", "protocol.splits", 0, n_init - 1)
+        if set(dev) & (set(splits.selection_init_states) | set(splits.test_init_states)):
+            raise ConfigError("protocol.splits: development_init_states overlaps selection or test states")
+        splits = dataclasses.replace(splits, development_init_states=dev)
 
     e = _get(raw, "evaluation", "")
     evaluation = EvalSpec(

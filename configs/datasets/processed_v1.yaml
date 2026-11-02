@@ -1,0 +1,37 @@
+# Processed-demonstration version (NOT part of the frozen protocol v1.0; proposed for protocol v1.1).
+# Outputs are immutable: a different setting requires a new `version` string.
+version: libero90_aligned256_v1
+camera_resolution: 256          # deployment render size (OpenPI LIBERO_ENV_RESOLUTION)
+validation_resolution: 128      # extra render used only to compare against the original 128 px HDF5 images
+source:
+  suite: libero_90
+  lock_file: configs/dataset.lock.json      # sha256 of every raw HDF5 (HF LFS, pinned revision)
+  data_root_env: LIBERO_DATA_ROOT
+output:
+  processed_root_env: CLVLA_PROCESSED_ROOT  # aligned HDF5 + manifests: <root>/<version>/
+  lerobot_home_env: HF_LEROBOT_HOME         # LeRobot datasets: <HF_LEROBOT_HOME>/<repo_id>/ (read by OpenPI's loader)
+  image_compression: gzip
+  image_compression_level: 4
+thresholds:                     # clvla.rerender.Thresholds
+  max_state_residual: 0.003
+  offset_margin: 3.0
+  max_replay_qpos_median: 0.01   # flag (not stop) demos whose median one-step qpos replay error exceeds this
+  gate_on_replay: false          # replay is a noisy diagnostic: same demo, same code gave medians 0.001-0.0055 across passes
+  max_image_mae: 12.0
+  image_check_every: 10
+  require_final_success: false
+# Named demo splits for LeRobot conversion and training. No profile = the frozen protocol split (experiment.yaml:
+# train 0-44 / val 45-49). A profile writes separate repos (<repo>-<profile>-{train,val}) and its own manifest.
+split_profiles:
+  n25:                          # 25-demo teachers: train demo_0..24; demo_25..49 held out (val loss + eval init states)
+    train_demo_indices: {start: 0, stop: 25}
+    val_demo_indices: {start: 25, stop: 50}
+  n10:                          # 10-demo runs: train demo_0..9 (a SUBSET of n25's training demos); held out demo_10..49 (40)
+    train_demo_indices: {start: 0, stop: 10}
+    val_demo_indices: {start: 10, stop: 50}
+lerobot:
+  namespace: clvla
+  fps: 10                       # as OpenPI examples/libero/convert_libero_data_to_lerobot.py
+  robot_type: panda
+  image_writer_threads: 10
+  image_writer_processes: 5

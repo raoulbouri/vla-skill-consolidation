@@ -97,3 +97,23 @@ def fake_checkpoint(tmp_path):
     ns.mkdir(parents=True)
     (ns / "norm_stats.json").write_text(json.dumps(copy.deepcopy(NORM_STATS)))
     return root, build_lock(root)
+
+
+def load_script(name: str):
+    """Import scripts/<name>.py as a module (for testing CLI defaults with monkeypatched dependencies)."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(f"clvla_script_{name}", str(ROOT / "scripts" / f"{name}.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.fixture
+def project_env(monkeypatch, tmp_path):
+    """Fake but complete environment variables (no real asset is touched)."""
+    values = dict(FAKE_ENV, CLVLA_PROCESSED_ROOT=str(tmp_path / "processed"), HF_LEROBOT_HOME=str(tmp_path / "lerobot"),
+                  CLVLA_OUTPUT_ROOT=str(tmp_path / "outputs"))
+    for k, v in values.items():
+        monkeypatch.setenv(k, v)
+    return values
