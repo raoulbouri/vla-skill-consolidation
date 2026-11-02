@@ -70,7 +70,7 @@ def build_student_policy(conf, adapter) -> object:
     return policy
 
 
-def load_delta_teacher(base_model, delta_dir, R=None):
+def load_delta_teacher(base_model, delta_dir, R=None, paligemma_variant="gemma_2b", action_expert_variant="gemma_300m"):
     """Expert teacher rebuilt from its exported changed leaves and the local base, all as BF16. Refuses to continue unless every leaf hash matches the original checkpoint's."""
     import hashlib
     import json
@@ -94,7 +94,8 @@ def load_delta_teacher(base_model, delta_dir, R=None):
     assert not bad, f"rebuilt teacher differs from the checkpoint: {bad[:5]}"
     if R is not None:
         R["teacher_rebuild"] = {"leaves_verified": len(params), "own_leaves": len(sha["delta_keys"]), "shared_with_base": len(params) - len(sha["delta_keys"])}
-    conf = pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False, paligemma_variant="gemma_2b", action_expert_variant="gemma_300m")
+    # expert300m teachers use the defaults; LoRA teachers (teacher-n25-s500) need gemma_2b_lora / gemma_300m_lora, as in their train_spec.yaml
+    conf = pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False, paligemma_variant=paligemma_variant, action_expert_variant=action_expert_variant)
     return conf.load(traverse_util.unflatten_dict(params, sep="/")), 250, str(delta_dir)
 
 

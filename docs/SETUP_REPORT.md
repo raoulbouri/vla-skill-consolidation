@@ -157,3 +157,71 @@ These numbers are for a custom LIBERO-90 subset with 10 episodes per task. Wilso
 4. Define the continual-learning metrics module (success matrix, forgetting, forward/backward transfer) on top of
    `clvla.evaluation`, with unit tests on synthetic matrices.
 5. Then the sequential fine-tuning baseline (naive sequential FT), before any novel method.
+
+## 10. Addendum 2026-10-25: data v1.1, training smoke and specialist code (code only; NOTHING executed)
+
+Changes are uncommitted for review (`git status`, `git diff`). The details, decisions and commands were originally in
+`docs/NEXT_EXPERIMENTS.md`; that untracked file was later overwritten by the on-policy-distillation plan and deleted on
+2026-10-30 (see §11).
+
+**Added:**
+
+- **Data:** `src/clvla/{rerender,lerobot_convert}.py`, `scripts/{rerender_demos,convert_to_lerobot}.py`,
+  `configs/datasets/processed_v1.yaml`. Deployment-aligned 256 px re-rendering with offset/replay/final-state/image
+  audits, and separate train/val LeRobot datasets.
+- **Training:** `src/clvla/{training_core,openpi_training,preflight,train_task}.py`,
+  `scripts/{train_smoke,check_trained_policy,serve_trained_policy}.py`, `scripts/serve_trained_policy.sh`,
+  `configs/training/smoke_task78.yaml`. LoRA training initialised from the local `pi05_libero` params through a
+  strict wrapper of OpenPI's `CheckpointWeightLoader`, with bundled norm stats via `AssetsConfig`.
+- **Specialists and evaluation:** `src/clvla/specialists.py`, `scripts/{train_specialists,eval_specialists}.py`,
+  `scripts/{eval_checkpoint,smoke_compare}.sh`, `configs/training/specialists.yaml` (budget unapproved).
+- **Benchmark v1.1 tools:** `src/clvla/selection_v11.py`, `scripts/{screen_tasks,propose_manifest_v1_1}.py`,
+  `scripts/screen_tasks.sh`, `configs/proposed/{experiment_v1.1,screening_v1.1}.yaml`. None of these are frozen.
+- **Tests:** 7 unit files (`tests/unit/test_{cli_defaults,lerobot_split,preflight,rerender,selection_v11,specialists,
+  training_core}.py`) and 3 marked integration files (`tests/integration/test_{lerobot_conversion,rerender_demo,
+  training_init}.py`).
+
+**Modified:**
+
+- `src/clvla/config.py`: optional `development_init_states`. v1.0 lacks the key, so its hash and behaviour are
+  unchanged.
+- `src/clvla/experiment.py`: new run kinds `specialists`, `specialist_eval`, `screening`.
+- `src/clvla/evaluation.py` and `scripts/run_eval.py`: `check_split_allowed`, so smoke and fine-tune evaluations
+  cannot use test init states.
+- `env.sh`: loads `.env.example` defaults, then `.env`.
+- `.env.example`: adds `CLVLA_PROCESSED_ROOT`, `HF_LEROBOT_HOME`.
+- `tests/conftest.py`: `load_script`, `project_env` fixtures.
+
+**Unchanged:** `configs/experiment.yaml` (protocol v1.0, `a3d55cd8…`), `configs/task_manifest.yaml` (v1.0,
+`b1a0789d…`), all baseline outputs, raw demos, the checkpoint, and both submodules.
+
+**Checks NOT run:** no unit or integration test, no ruff, no import of the new modules in either environment, no
+rendering, conversion, training, evaluation, policy server, GPU guard or `nvidia-smi`. The only checks performed
+were static: reading pinned OpenPI/LIBERO/lerobot source and checkpoint metadata over ssh, plus a local (Mac,
+Python 3.10) byte-compile and AST scan for unused imports and undefined names. No xulab process or GPU was touched.
+
+**Checkpoint-loading decision:** supported via `CheckpointWeightLoader(params_path=<local pi05_libero>/params)`. Shapes
+are verified at load time by OpenPI's `check_pytree_equality` plus the strict loader (static metadata only holds chunk
+shapes). Two findings need approval:
+
+- stock OpenPI LoRA initialises `lora_b` ~ N(0, 0.01), so step 0 ≠ `pi05_libero`; the code defaults to
+  `lora_b_init: zeros`;
+- stock OpenPI LoRA keeps SigLIP and the projection heads fully trainable (`freeze_vision_encoder` option).
+
+## 11. Addendum 2026-10-30: statements carried over from the deleted `docs/NEXT_EXPERIMENTS.md`
+
+`docs/NEXT_EXPERIMENTS.md` (untracked; last content: the distillation plan) and the companion reference-inspection
+note were deleted on 2026-10-30 when that direction was dropped. Its section "Dependencies on existing work (state at
+2026-10-28)" held three statements about the pipeline. Only the parts still true are kept here:
+
+- Moved verbatim: "Aligned 256 px data and LeRobot train/val repos exist for the 10 manifest tasks (see
+  `docs/SETUP_REPORT.md`)."
+- Moved in part: "The LoRA training smoke, specialists runner and screening code are written … and uncommitted".
+  Dropped as no longer true: "unrun" (training code has since run) and "Phase 1 reuses that path and is blocked on the
+  open decisions" (OPD-specific).
+- Moved in part: "Evaluation gates keep test init states out of training and smoke runs" (`check_split_allowed` in
+  `src/clvla/evaluation.py`). Dropped: "all Phase 1-3 evaluation uses development states only" (OPD-specific).
+
+These code and config comments still name `docs/NEXT_EXPERIMENTS.md`. They are part of the uncommitted work and were
+left unchanged: `scripts/train_smoke.py:10`, `src/clvla/openpi_training.py:10`, `src/clvla/selection_v11.py:3`,
+`configs/training/smoke_task78.yaml:2`, `configs/proposed/experiment_v1.1.yaml:5`.
