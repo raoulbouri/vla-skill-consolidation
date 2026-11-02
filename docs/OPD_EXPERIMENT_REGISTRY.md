@@ -67,7 +67,7 @@ Synced on 2026-11-02 with xulab as the source of truth; both machines hold ident
 
 ## 6. Handoff (2026-11-02)
 
-Code: <https://github.com/raoulbouri/vla-skill-consolidation>. Checkpoints and results: Google Drive folder linked from `README.md`, three packages built on xulab (`outputs/_packages/`, packages 1-2) and aims (`outputs/_packages/`, package 3); each has a `.SHA256SUMS` and a `.filelist`. Package 3 comes from `scripts/export_teacher_deltas.sh` (aims `outputs/teacher_deltas/`). `load_delta_teacher` now takes `paligemma_variant` and `action_expert_variant`, so LoRA-teacher deltas load too (checked on CPU: 71 leaves verified for the t35 LoRA teacher, 51 for Teacher-10D).
+Code: <https://github.com/raoulbouri/vla-skill-consolidation>. Checkpoints and results: Hugging Face model repo <https://huggingface.co/raoulb091602/vla-skill-consolidation> (private), files at their repository paths plus `results/` (results tar) and `checksums/`; uploaded from hard-linked staging folders `outputs/_hf_stage/` on xulab and aims. The original tar packages (Google Drive was too small) remain in `outputs/_packages/` on both machines, each with a `.SHA256SUMS` and a `.filelist`. Package 3 comes from `scripts/export_teacher_deltas.sh` (aims `outputs/teacher_deltas/`). `load_delta_teacher` now takes `paligemma_variant` and `action_expert_variant`, so LoRA-teacher deltas load too (checked on CPU: 71 leaves verified for the t35 LoRA teacher, 51 for Teacher-10D).
 
 ## 7. Two-phase curriculum (prepared, not started)
 
