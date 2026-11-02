@@ -19,16 +19,21 @@ from clvla.evaluation import make_libero_env, run_episode
 from clvla.lerobot_convert import resolve_split
 from clvla.policy import RemotePolicy
 from clvla.tasks import load_manifest, resolve_tasks
+from opd_diag_rollout import Geometry, summary as geo_summary
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class RewardEnv:
+    """Also records the diagnostics' geometry after every step and attaches the current snapshot to each policy request as `_snap` (the trainer strips it before inference)."""
+
     def __init__(self, env, joint):
         self.env, self.reward, self.joint, self.door_min = env, 0.0, joint, 0.0
+        self.geo = Geometry(env)
 
     def reset(self):
         self.reward, self.door_min = 0.0, 0.0
+        self.geo.rows = []
         return self.env.reset()
 
     def set_init_state(self, s):
@@ -38,7 +43,16 @@ class RewardEnv:
         o, r, d, i = self.env.step(a)
         self.reward += float(r)
         self.door_min = min(self.door_min, float(self.env.env.sim.data.get_joint_qpos(self.joint)))
+        self.geo.rows.append(np.concatenate([self.geo.snapshot(), np.asarray(a, np.float64)]))
         return o, r, d, i
+
+
+class SnapClient:
+    def __init__(self, client, geo):
+        self.client, self.geo = client, geo
+
+    def __call__(self, request):
+        return self.client({**request, "_snap": self.geo.snapshot().tolist()})
 
 
 def main():
@@ -86,8 +100,8 @@ def main():
         min_l2 = float(np.min(np.linalg.norm(held_states - start, axis=1)))
         assert min_l2 > 1e-3, "training start coincides with a held-out start"
         t0 = time.time()
-        r = run_episode(env, client, start, rt.spec.instruction, max_steps=cfg.simulator.max_steps, num_steps_wait=cfg.simulator.num_steps_wait, replan_steps=cfg.policy.replan_steps, resize_size=cfg.policy.resize_size, dummy_action=cfg.simulator.dummy_action)
-        client._client.infer({"_ctl": "done", "success": bool(r.success), "steps": int(r.steps), "calls": int(r.policy_calls), "reward": float(env.reward), "error": r.error, "seconds": time.time() - t0, "door_min": env.door_min, "start_sha": hashlib.sha256(start.tobytes()).hexdigest()[:16], "start_min_l2_to_held_out": min_l2, "arm_offset_max": arm_offset_max})
+        r = run_episode(env, SnapClient(client, env.geo), start, rt.spec.instruction, max_steps=cfg.simulator.max_steps, num_steps_wait=cfg.simulator.num_steps_wait, replan_steps=cfg.policy.replan_steps, resize_size=cfg.policy.resize_size, dummy_action=cfg.simulator.dummy_action)
+        client._client.infer({"_ctl": "done", "success": bool(r.success), "steps": int(r.steps), "calls": int(r.policy_calls), "reward": float(env.reward), "error": r.error, "seconds": time.time() - t0, "door_min": env.door_min, "start_sha": hashlib.sha256(start.tobytes()).hexdigest()[:16], "start_min_l2_to_held_out": min_l2, "arm_offset_max": arm_offset_max, **geo_summary(env.geo.rows, cfg.simulator.num_steps_wait)})
 
 
 if __name__ == "__main__":

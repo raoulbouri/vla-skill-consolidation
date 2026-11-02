@@ -24,8 +24,7 @@ from opd_lora_student import build_student_model, load_delta_teacher
 
 ROOT = Path(__file__).resolve().parents[1]
 cfg = sde.SDEConfig()
-NOISE_SEED0, SCORE_SEED0, WAIT, PROMPT = 300000, 800000, 10, "open the microwave"
-CKPTS = (0, 25, 50, 75, 100, 200, 300, 400, 500)
+SCORE_SEED0, WAIT, PROMPT = 800000, 10, "open the microwave"
 w = np.asarray(pkl.kl_coefficients(cfg)["weights"], np.float64)
 MASKS = {}
 for name, (r_, c_) in {**pkl.GROUPS, "exec_xyz": (slice(0, 5), slice(0, 3)), "exec_rot": (slice(0, 5), slice(3, 6)), "exec_grip": (slice(0, 5), slice(6, 7))}.items():
@@ -56,7 +55,7 @@ def load_set(d, policy_id):
         e = json.loads(l)
         z = np.load(d / ("ep_%02d.npz" % e["k"]))
         for i in range(len(z["ev_t_env"])):
-            obs.append({"set_policy": policy_id, "k": e["k"], "event": i, "t_exec": int(z["ev_t_env"][i]) - WAIT, "episode_success": e["success"], "phase": phase(z["ev_snap"][i]), "snap": z["ev_snap"][i], "chunk": z["ev_chunk"][i], "image": z["ev_image"][i], "wrist": z["ev_wrist"][i], "state": z["ev_state"][i]})
+            obs.append({"set_policy": policy_id, "noise_seed": e["noise_seed"], "k": e["k"], "event": i, "t_exec": int(z["ev_t_env"][i]) - WAIT, "episode_success": e["success"], "phase": phase(z["ev_snap"][i]), "snap": z["ev_snap"][i], "chunk": z["ev_chunk"][i], "image": z["ev_image"][i], "wrist": z["ev_wrist"][i], "state": z["ev_state"][i]})
     return obs
 
 
@@ -81,9 +80,15 @@ def main():
     ap.add_argument("--checkpoints", required=True)
     ap.add_argument("--subset", type=int, default=240)
     ap.add_argument("--limit", type=int, default=None, help="smoke test only")
+    ap.add_argument("--ckpts", default="0,25,50,75,100,200,300,400,500")
+    ap.add_argument("--teacher-set", default="teacher10d", help="exp1/<name>: set (b)")
+    ap.add_argument("--student-set", default="student500", help="exp1/<name>: set (a)")
+    ap.add_argument("--compare-ckpt", type=int, default=500, help="checkpoint compared with checkpoint 0 in Experiment 2a")
+    ap.add_argument("--out-name", default="scores")
     a = ap.parse_args()
     diag = Path(a.diag)
-    out = diag / "scores"
+    out = diag / a.out_name
+    CKPTS = tuple(int(c) for c in a.ckpts.split(","))
     out.mkdir(parents=True, exist_ok=True)
     conf = load_experiment_config(ROOT / "configs/experiment.yaml")
     policy, _ = load_official_policy(conf.checkpoint.openpi_config, conf.checkpoint.local_dir, expected_asset_id=conf.checkpoint.norm_stats_asset_id, state_dim=conf.policy.state_dim, action_dim=conf.policy.action_dim, action_horizon=conf.policy.action_horizon)
@@ -120,8 +125,8 @@ def main():
         obs, inputs = model_inputs(policy, {"observation/image": o["image"], "observation/wrist_image": o["wrist"], "observation/state": o["state"], "prompt": PROMPT})
         return inputs, pre_s(st_s[0], obs), pre_t(st_t, obs), obs
 
-    teacher_obs = load_set(diag / "exp1/teacher10d", "teacher10d")
-    student_obs = load_set(diag / "exp1/student500", "student500")
+    teacher_obs = load_set(diag / "exp1" / a.teacher_set, a.teacher_set)
+    student_obs = load_set(diag / "exp1" / a.student_set, a.student_set)
     if a.limit:
         teacher_obs, student_obs = teacher_obs[: a.limit], student_obs[: a.limit]
     meta = lambda o: {k: o[k] for k in ("set_policy", "k", "event", "t_exec", "episode_success", "phase")}
@@ -131,12 +136,12 @@ def main():
     for i, o in enumerate(teacher_obs):
         inputs, cs, ct, obs_ = prepare(o)
         if i < 3:
-            cache_same.append(all(bool(jnp.array_equal(x, y)) for x, y in zip(jax.tree.leaves(pre_s(st_s[500], obs_)), jax.tree.leaves(cs))))
-        x0, _ = event_noise(NOISE_SEED0 + 1000 * o["k"] + o["event"], cfg)
+            cache_same.append(all(bool(jnp.array_equal(x, y)) for x, y in zip(jax.tree.leaves(pre_s(st_s[a.compare_ckpt], obs_)), jax.tree.leaves(cs))))
+        x0, _ = event_noise(o["noise_seed"] + o["event"], cfg)
         at = ode(vel_t, st_t, ct, x0, inputs)
         rec_dev.append(float(np.abs(at - o["chunk"]).max()))
         r = {**meta(o), "teacher_vs_recorded_max_abs": rec_dev[-1]}
-        for c in (0, 500):
+        for c in (0, a.compare_ckpt):
             r.update({"ckpt%d_%s" % (c, k): v for k, v in act_err(ode(vel_s, st_s[c], cs, x0, inputs), at).items()})
         rows.append(r)
         if i % 200 == 0:

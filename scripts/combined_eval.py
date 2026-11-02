@@ -25,12 +25,19 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class MetricEnv:
-    def __init__(self, env, joint=None):
+    def __init__(self, env, joint=None, geometry=False):
         self.env, self.joint = env, joint
+        self.geo = None
+        if geometry:
+            from opd_diag_rollout import Geometry
+
+            self.geo = Geometry(env)
         self.clear()
 
     def clear(self):
         self.rewards, self.actions, self.door_min = [], [], 0.0
+        if self.geo is not None:
+            self.geo.rows = []
 
     def reset(self):
         return self.env.reset()
@@ -44,6 +51,8 @@ class MetricEnv:
         self.actions.append(np.asarray(action, np.float64))
         if self.joint:
             self.door_min = min(self.door_min, float(self.env.env.sim.data.get_joint_qpos(self.joint)))
+        if self.geo is not None:
+            self.geo.rows.append(np.concatenate([self.geo.snapshot(), np.asarray(action, np.float64)]))
         return obs, reward, done, info
 
 
@@ -57,6 +66,7 @@ def main():
     ap.add_argument("--states", type=int, default=50)
     ap.add_argument("--profile", default="n25")
     ap.add_argument("--door-joint")
+    ap.add_argument("--geometry", action="store_true", help="also log handle distance, contact and door onset (opd_diag_rollout.Geometry); does not change the episode")
     a = ap.parse_args()
     out = Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -76,7 +86,7 @@ def main():
         rt = tasks[pos]
         with h5py.File(str(proot / (rt.spec.name + "_demo.hdf5")), "r") as f:
             inits = {i: np.asarray(f["data"]["demo_%d" % i]["states"][0]) for i in held}
-        env = MetricEnv(make_libero_env(rt.bddl_path, cfg.simulator.camera_resolution, env_seed), a.door_joint)
+        env = MetricEnv(make_libero_env(rt.bddl_path, cfg.simulator.camera_resolution, env_seed), a.door_joint, a.geometry)
         for mode in a.modes.split(","):
             for state in list(held)[: a.states]:
                 if (a.policy_id, pos, mode, state) in done:
@@ -91,6 +101,10 @@ def main():
                 lat = client.latencies_s[n_lat:]
                 row = {"policy_id": a.policy_id, "position": pos, "libero_90_index": rt.spec.libero_90_index, "task": rt.spec.name, "mode": mode, "state": state, "env_seed": env_seed, "noise_seed": seed, "success": bool(r.success), "reward_sum": float(sum(env.rewards)), "steps": int(r.steps), "termination": "error" if r.error else ("success" if r.success else "timeout"), "error": r.error, "replans": int(r.policy_calls),
                        "nonfinite_actions": int(np.sum(~np.isfinite(acts))), "arm_abs_max": float(np.abs(acts[:, :6]).max()) if len(acts) else None, "arm_outside_input_range_fraction": float(np.mean(np.abs(acts[:, :6]) > 1.0)) if len(acts) else None, "gripper_min": float(acts[:, 6].min()) if len(acts) else None, "gripper_max": float(acts[:, 6].max()) if len(acts) else None, "latency_mean_s": float(np.mean(lat)) if lat else None, "latency_max_s": float(np.max(lat)) if lat else None, "runtime_s": time.time() - t0, "door_min": env.door_min if a.door_joint else None}
+                if env.geo is not None:
+                    from opd_diag_rollout import summary as geo_summary
+
+                    row.update({"geo_" + k: v for k, v in geo_summary(env.geo.rows, wait).items()})
                 with out.open("a") as f:
                     f.write(json.dumps(row) + "\n")
                 print(row["policy_id"], pos, mode, state, row["success"], row["steps"], round(row["runtime_s"], 1), flush=True)

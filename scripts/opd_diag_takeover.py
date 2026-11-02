@@ -1,5 +1,5 @@
 """t35 diagnostics, Experiment 2b: restore the teacher's saved sim state at 25%, 50% and 75% of each successful teacher episode and let the served policy finish within the teacher's remaining step budget.
-Noise for restored event e of start k is 300000 + 1000 * k + e, the noise the teacher used there, so a teacher resume should retrace the original and checks the restore.
+Noise for restored event e is the episode's recorded noise seed + e, the noise the teacher used there, so a teacher resume should retrace the original and checks the restore.
   scripts/py-sim scripts/opd_diag_takeover.py --port P --policy-id ID --teacher-dir DIR --out DIR [--limit N] [--any]"""
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from clvla.config import load_experiment_config
 from clvla.evaluation import make_libero_env, run_episode
 from clvla.policy import RemotePolicy
 from clvla.tasks import load_manifest, resolve_tasks
-from opd_diag_rollout import NOISE_SEED0, POSITION, Geometry, Recorder, save_episode, summary
+from opd_diag_rollout import POSITION, Geometry, Recorder, save_episode, summary
 
 ROOT = Path(__file__).resolve().parents[1]
 FRACTIONS = (0.25, 0.5, 0.75)
@@ -50,7 +50,7 @@ def main():
             idx = int(np.argmax(exec_t >= fr * e["steps"]))
             t_exec = int(exec_t[idx])
             budget = cfg.simulator.max_steps - t_exec
-            seed = NOISE_SEED0 + 1000 * e["k"] + idx
+            seed = e["noise_seed"] + idx
             client._client.infer({"_episode_mode": "ode", "_episode_seed": seed})
             rec = Recorder(client, geo, False)
             t0 = time.time()

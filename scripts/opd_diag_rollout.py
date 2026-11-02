@@ -1,7 +1,7 @@
 """t35 diagnostics, Experiment 1: rollouts from 40 diagnostic starts with per-step geometry; with --save-obs also every replanning event's observation, sim state and action chunk, for Experiments 2 and 3.
 Starts use seeds 950000-950039, built exactly like the training random starts (environment reset, seeded arm noise 0.04 rad, training demos' mean gripper opening), and are checked against the held-out demo starts.
   scripts/py-sim scripts/opd_diag_rollout.py --port P --policy-id ID --out DIR [--save-obs] [--starts 40]
-Noise seed 300000 + 1000 * k for start k, plus the replanning event: the same for every policy."""
+Noise seed 300000 (--noise-seed0) + 1000 * k for start k, plus the replanning event: the same for every policy."""
 
 from __future__ import annotations
 
@@ -108,6 +108,8 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--starts", type=int, default=40)
     ap.add_argument("--save-obs", action="store_true")
+    ap.add_argument("--start-seed0", type=int, default=START_SEED0, help="diagnostics 950000; curriculum development set 960000")
+    ap.add_argument("--noise-seed0", type=int, default=NOISE_SEED0)
     a = ap.parse_args()
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -128,7 +130,7 @@ def main():
     for k in range(a.starts):
         if k in done:
             continue
-        demo = START_SEED0 + k
+        demo = a.start_seed0 + k
         np.random.seed(demo)
         geo.env.seed(demo)
         geo.env.reset()
@@ -139,7 +141,7 @@ def main():
         np.random.seed(demo + 1)
         min_l2 = float(np.min(np.linalg.norm(held_states - start, axis=1)))
         assert min_l2 > 1e-3, "diagnostic start coincides with a held-out start"
-        seed = NOISE_SEED0 + 1000 * k
+        seed = a.noise_seed0 + 1000 * k
         client._client.infer({"_episode_mode": "ode", "_episode_seed": seed})
         rec = Recorder(client, geo, a.save_obs)
         t0 = time.time()

@@ -2,6 +2,7 @@
   CLVLA_USE_GPU=1 CLVLA_GPU=G PYTHONPATH=scripts:tests/ogpo_port scripts/py-policy scripts/opd_lora_train.py --teacher-run D --name student10d --out O --updates 100 --position 4 --adapter-seed 7
 Fixed before the first run: AdamW as in the repository's recipe (lr 5e-5, b1 .9, b2 .95, eps 1e-8, wd 1e-10, clip 1.0); 8 evenly spaced observations and 2 trajectories per observation per update (recorded noise + fresh noise); training states demo_0..N-1 in order (--train-demos).
 Gate after update 1: forward parameters changed, and fresh-noise paired KL 95% interval lies below zero. Later stops: non-finite values, or diagnostic KL above 1.5x its initial value.
+Curriculum options (defaults reproduce the runs above): --teacher-control-updates N lets the teacher's ODE actions drive the environment for updates 1..N while the student still samples its own SDE chains on every observation and the loss is unchanged; with --teacher-success-only a failed teacher episode is re-rolled from a new start (seed 920000 + 10u + try) and never trained on. Teacher-controlled updates pick the 8 observations by phase (2 approach, 2 pre-contact, 2 contact before the door moves, 2 early opening down to -0.8 rad). --stop-after U saves the full training state (FP32 master, optimizer state, diagnostic reference) and exits; --resume continues the same run directory from it.
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ from clvla.openpi_training import load_trained_policy
 from clvla.policy import load_official_policy
 from flax import nnx, traverse_util
 from openpi.serving import websocket_policy_server
+from openpi.shared import nnx_utils
 from opd_lora_student import HEADS, build_student_model, initial_adapter, is_trainable, load_delta_teacher
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -48,6 +50,33 @@ for name, (r_, c_) in pkl.GROUPS.items():
     m_ = np.zeros((10, 32))
     m_[r_, c_] = 1.0
     MASKS[name] = m_
+GEO_KEYS = ("min_dist", "first_near", "first_contact", "contact_steps", "door_onset")
+PHASES = ("approach", "precontact", "contact", "opening", "late")
+
+
+def phase_of(snap):
+    """Geometry snapshot (opd_diag_rollout.Geometry) -> phase. Door at or below -0.05 rad: opening down to -0.8, late beyond; otherwise contact if the robot touches the door, pre-contact within 0.12 m of the handle, else approach."""
+    if snap is None:
+        return None
+    q, dist, con = snap[6], snap[7], snap[8] > 0
+    if q <= -0.05:
+        return "opening" if q > -0.8 else "late"
+    return "contact" if con else ("precontact" if dist <= 0.12 else "approach")
+
+
+def select(events, stratified):
+    """8 observations: evenly spaced, or by phase (2 per phase in order approach, pre-contact, contact, opening; shortfalls filled from contact, opening, pre-contact, late, approach), evenly spaced within a phase."""
+    if not stratified:
+        return sorted({int(round(x)) for x in np.linspace(0, len(events) - 1, B_OBS)})
+    by = {p: [i for i, e in enumerate(events) if phase_of(e["snap"]) == p] for p in PHASES}
+    spread = lambda ids, n: [ids[int(round(x))] for x in np.linspace(0, len(ids) - 1, n)] if n and ids else []  # noqa: E731
+    pick = []
+    for p in ("approach", "precontact", "contact", "opening"):
+        pick += spread(by[p], min(2, len(by[p])))
+    for p in ("contact", "opening", "precontact", "late", "approach"):
+        rest = [i for i in by[p] if i not in pick]
+        pick += spread(rest, min(B_OBS - len(set(pick)), len(rest)))
+    return sorted(set(pick))[:B_OBS]
 
 
 def release(tag):
@@ -101,9 +130,11 @@ class Server:
         if ctl == "done":
             with self.lock:
                 self.result = {k: request[k] for k in ("success", "steps", "calls", "reward", "error", "seconds", "door_min", "start_sha", "start_min_l2_to_held_out", "arm_offset_max")}
+                self.result.update({k: request.get(k) for k in GEO_KEYS})
             return {"actions": 0}
         s = seed_ok(self.seed + len(self.events))
-        phys, rec = self.sample(request, s)
+        snap = request.pop("_snap", None)
+        phys, rec = self.sample(request, s, None if snap is None else np.asarray(snap, np.float64))
         self.events.append(rec)
         return {"actions": phys}
 
@@ -122,10 +153,16 @@ def main():
     ap.add_argument("--position", type=int, default=4)
     ap.add_argument("--adapter-seed", type=int, default=7)
     ap.add_argument("--sanity-only", action="store_true")
+    ap.add_argument("--teacher-control-updates", type=int, default=0, help="updates 1..N run on teacher-driven episodes")
+    ap.add_argument("--teacher-success-only", action="store_true")
+    ap.add_argument("--max-teacher-tries", type=int, default=10)
+    ap.add_argument("--stop-after", type=int, default=None, help="save the full training state after this update and exit")
+    ap.add_argument("--resume", action="store_true", help="continue from <out>/state")
     a = ap.parse_args()
     out = Path(a.out)
     (out / "checkpoints").mkdir(parents=True, exist_ok=True)
     (out / "batches").mkdir(exist_ok=True)
+    prev = json.loads((out / "metrics.json").read_text()) if a.resume else None
     R = {"name": a.name, "teacher_run": a.teacher_run, "xla_flags": os.environ["XLA_FLAGS"], "optimizer": {"type": "adamw", "lr": LR, "b1": B1, "b2": B2, "eps": EPS, "weight_decay": WD, "clip": CLIP}, "batch": {"observations": B_OBS, "trajectories_per_observation": M}, "updates_requested": a.updates}
 
     def save():
@@ -159,8 +196,16 @@ def main():
     frozen_sha = tree_sha((vlm, other))
     release("student_built")
     R["identity"] = {"base_sha": base_sha, "teacher_sha": t_sha, "teacher_checkpoint": str(tck), "teacher_step": tstep, "teacher_fingerprint": t_summary.get("trained_checkpoint_fingerprint"), "adapter_seed": a.adapter_seed, "initial_adapter_sha": adapter_sha, "frozen_student_sha": frozen_sha, "n_trainable": int(sum(v.size for v in adapter0.values())), "n_lora_b": int(sum(v.size for k, v in adapter0.items() if "lora_b" in k)), "leaves": len(keys)}
+    R["curriculum"] = {"teacher_control_updates": a.teacher_control_updates, "teacher_success_only": a.teacher_success_only, "max_teacher_tries": a.max_teacher_tries, "teacher_actions": "ODE, OpenPI sample_actions with the event noise", "selection": "phase-stratified while the teacher drives, evenly spaced otherwise"}
+    if prev:
+        for k in ("identity", "teacher_rebuild"):
+            same = {f: prev[k][f] == R[k][f] for f in R.get(k, {}) if f in prev.get(k, {})}
+            assert all(same.values()), f"resume: {k} differs from the saved run: {same}"
+        R.update({k: prev[k] for k in ("diagnostic", "direct_vs_state", "sanity", "routing_vlm_nonzero", "phase1") if k in prev})
+        R["resumed"] = {"from_update": prev.get("completed_updates"), "time": time.time()}
     save()
-    np.savez(out / "checkpoints" / "adapter_000.npz", **{k.replace("/", "__"): adapter0[k] for k in keys})
+    if not a.resume:
+        np.savez(out / "checkpoints" / "adapter_000.npz", **{k.replace("/", "__"): adapter0[k] for k in keys})
 
     leaves, treedef = jax.tree.flatten(theta0)
     by_id = {id(v): k for k, v in flat(theta0).items()}
@@ -201,12 +246,20 @@ def main():
 
     jp_s, jp_t, j_sample, j_vs, j_vt = jax.jit(s_prefix), jax.jit(t_prefix), jax.jit(sample_), jax.jit(vel_s_), jax.jit(vel_t_)
     j_grad, j_det = jax.jit(jax.value_and_grad(obj, has_aux=True)), jax.jit(jax.grad(obj_det))
+    jt_act = nnx_utils.module_jit(teacher.sample_actions)
     master = dict(adapter0)
+    if a.resume:
+        z = np.load(out / "state" / "master.npz")
+        master = {k: np.asarray(z[k.replace("/", "__")], np.float32) for k in keys}
     theta = forward(master)
-    state_box = {"theta": theta}
+    state_box = {"theta": theta, "controller": "student"}
     sample_seconds = []
 
-    def serve_sample(request, seed):
+    def to_phys(inputs, latent):
+        return np.asarray(policy._output_transform({"state": np.asarray(inputs["state"]), "actions": np.asarray(latent)})["actions"])
+
+    def serve_sample(request, seed, snap):
+        """The student always samples its own SDE chain from the event noise; the action executed is the student's, or the teacher's ODE action from the same noise while the teacher drives."""
         x0, eps = event_noise(seed, cfg)
         obs, inputs = model_inputs(policy, request)
         ob, sm, sk = jp_s(s_full, obs)
@@ -214,8 +267,9 @@ def main():
         o = jax.block_until_ready(j_sample(state_box["theta"], ob, sm, sk, x0, eps))
         sample_seconds.append(time.perf_counter() - t0)
         chain = np.asarray(o["chain"])
-        phys = np.asarray(policy._output_transform({"state": np.asarray(inputs["state"]), "actions": chain[0, cfg.num_steps]})["actions"])
-        return phys, {"seed": seed, "x0": x0, "eps": eps, "chain": chain, "means": np.asarray(o["means"]), "request": {k: np.asarray(request[k]) if k != "prompt" else str(request[k]) for k in ("observation/image", "observation/wrist_image", "observation/state", "prompt")}, "physical": phys}
+        phys_s = to_phys(inputs, chain[0, cfg.num_steps])
+        phys = to_phys(inputs, np.asarray(jt_act(jax.random.key(0), obs, noise=jnp.asarray(x0)))[0]) if state_box["controller"] == "teacher" else phys_s
+        return phys, {"seed": seed, "x0": x0, "eps": eps, "chain": chain, "means": np.asarray(o["means"]), "request": {k: np.asarray(request[k]) if k != "prompt" else str(request[k]) for k in ("observation/image", "observation/wrist_image", "observation/state", "prompt")}, "physical": phys, "student_physical": phys_s, "controller": state_box["controller"], "snap": snap}
 
     release("before_rollout")
     srv = Server(serve_sample)
@@ -238,11 +292,20 @@ def main():
             time.sleep(0.2)
 
     def prepare(ev):
-        obs, _ = model_inputs(policy, ev["request"])
+        obs, inputs = model_inputs(policy, ev["request"])
         ob, sm, sk = jp_s(s_full, obs)
         ob_t, tm, tk = jp_t(t_state, obs)
         assert tree_sha(ob) == tree_sha(ob_t)
-        return {"ob": ob, "sm": sm, "sk": sk, "tm": tm, "tk": tk, "same_cache": all(bool(jnp.array_equal(x, y)) for x, y in zip(jax.tree.leaves(sk), jax.tree.leaves(tk)))}
+        return {"ob": ob, "sm": sm, "sk": sk, "tm": tm, "tk": tk, "inputs": inputs, "same_cache": all(bool(jnp.array_equal(x, y)) for x, y in zip(jax.tree.leaves(sk), jax.tree.leaves(tk)))}
+
+    def act_error(th, p, x0):
+        """Executed rows 0-4 in physical units, student vs teacher ODE (Euler on the velocity programmes) from the same noise."""
+        ys, yt = jnp.asarray(x0), jnp.asarray(x0)
+        for s_ in cfg.times():
+            ys = ys - (1.0 / cfg.num_steps) * j_vs(th, p["ob"], p["sm"], p["sk"], ys, s_)
+            yt = yt - (1.0 / cfg.num_steps) * j_vt(t_state, p["ob"], p["tm"], p["tk"], yt, s_)
+        a_s, a_t = to_phys(p["inputs"], np.asarray(ys)[0])[:5], to_phys(p["inputs"], np.asarray(yt)[0])[:5]
+        return {"xyz": float(np.sqrt(np.mean((a_s[:, :3] - a_t[:, :3]) ** 2))), "rot": float(np.sqrt(np.mean((a_s[:, 3:6] - a_t[:, 3:6]) ** 2))), "all": float(np.sqrt(np.mean((a_s - a_t) ** 2))), "grip_agree": float(np.mean(np.sign(a_s[:, 6]) == np.sign(a_t[:, 6])))}
 
     def diag_eval(th, prepared, base_seed, n):
         rows = []
@@ -261,29 +324,59 @@ def main():
     with jax.default_device(cpu):
         mast_jax = {k: jax.device_put(master[k], cpu) for k in keys}
         opt_state = opt.init(mast_jax)
+        if a.resume:
+            zo = np.load(out / "state" / "opt_state.npz")
+            leaves_o, tdef_o = jax.tree.flatten(opt_state)
+            assert len(zo.files) == len(leaves_o), "resume: optimizer state layout differs"
+            opt_state = jax.tree.unflatten(tdef_o, [jax.device_put(np.asarray(zo[f"l{i:04d}"]).astype(np.asarray(l).dtype), cpu) for i, l in enumerate(leaves_o)])
     metrics, rollouts = [], []
     csv_path, roll_path = out / "training_metrics.csv", out / "rollout_records.jsonl"
     diag_prep, diag0 = None, None
-    R["diagnostic"] = {"note": "fixed observations from the first rollout, fixed noise, every 10 updates", "history": []}
-    R["direct_vs_state"] = []
+    if not a.resume:
+        R["diagnostic"] = {"note": "fixed observations from the first rollout, fixed noise, every 10 updates", "history": []}
+        R["direct_vs_state"] = []
+    else:
+        zd = np.load(out / "state" / "diag.npz")
+        diag0 = zd["diag0"]
+        diag_prep = [prepare({"request": {"observation/image": zd[f"image_{j}"], "observation/wrist_image": zd[f"wrist_{j}"], "observation/state": zd[f"state_{j}"], "prompt": str(zd["prompt"])}}) for j in range(int(zd["n"]))]
     stop_reason = None
     t_train = time.perf_counter()
-    u = 0
+    u = json.loads((out / "state" / "state.json").read_text())["update"] if a.resume else 0
+
+    def save_state():
+        (out / "state").mkdir(exist_ok=True)
+        np.savez(out / "state" / "master.npz", **{k.replace("/", "__"): master[k] for k in keys})
+        np.savez(out / "state" / "opt_state.npz", **{f"l{i:04d}": np.asarray(l) for i, l in enumerate(jax.tree.leaves(opt_state))})
+        (out / "state" / "state.json").write_text(json.dumps({"update": u, "time": time.time(), "master_sha": hashlib.sha256(b"".join(master[k].tobytes() for k in keys)).hexdigest()}))
+
     try:
         while u < a.updates:
             t_u = time.perf_counter()
+            state_box["controller"] = "teacher" if u < a.teacher_control_updates else "student"
+            teacher_drives = state_box["controller"] == "teacher"
             demo = 900000 + u if a.random_starts else u % a.train_demos
-            events, res = collect(demo, 400000 + 1000 * u)
+            tries = []
+            for t_i in range(a.max_teacher_tries if teacher_drives and a.teacher_success_only else 1):
+                demo = demo if t_i == 0 else 920000 + 10 * u + t_i
+                events, res = collect(demo, 400000 + 1000 * u + 100 * t_i)
+                tries.append({"demo": demo, "success": res["success"], "steps": res["steps"], "error": res["error"]})
+                if res["success"] or res["error"]:
+                    break
             if u == 0:
                 release("after_first_rollout")
-            rollouts.append({"update": u, "demo": demo, **res, "events": len(events)})
+            phase_counts = {p: sum(phase_of(e["snap"]) == p for e in events) for p in PHASES}
+            rollouts.append({"update": u, "demo": demo, **res, "events": len(events), "controller": state_box["controller"], "tries": tries, "phase_counts": phase_counts})
             with roll_path.open("a") as f:
                 f.write(json.dumps(rollouts[-1], default=str) + "\n")
             if res["error"]:
                 stop_reason = f"rollout error: {res['error']}"
                 break
-            idx = sorted({int(round(x)) for x in np.linspace(0, len(events) - 1, B_OBS)})
+            if teacher_drives and a.teacher_success_only and not res["success"]:
+                stop_reason = f"no successful teacher episode in {len(tries)} tries at update {u + 1}"
+                break
+            idx = select(events, teacher_drives)
             sel = [events[i] for i in idx]
+            sel_phase = [phase_of(e["snap"]) for e in sel]
             prep = [prepare(e) for e in sel]
             if diag_prep is None:
                 diag_prep = prep
@@ -292,13 +385,15 @@ def main():
                 R["diagnostic"]["events"] = idx
                 R["diagnostic"]["history"].append({"update": 0, "mean": float(diag0[:, 0].mean())})
                 R["identity"]["student_teacher_prefix_cache_identical"] = bool(prep[0]["same_cache"])
+                (out / "state").mkdir(exist_ok=True)
+                np.savez(out / "state" / "diag.npz", diag0=diag0, n=len(sel), prompt=str(sel[0]["request"]["prompt"]), **{f"image_{j}": s["request"]["observation/image"] for j, s in enumerate(sel)}, **{f"wrist_{j}": s["request"]["observation/wrist_image"] for j, s in enumerate(sel)}, **{f"state_{j}": s["request"]["observation/state"] for j, s in enumerate(sel)})
             if u == 0:
                 release("before_gradient")
             acc = {k: 0.0 for k in keys}
             acc_det = {k: 0.0 for k in keys}
             do_det = u % DIRECT_EVERY == 0
-            kls, gaps, chain_rel, finite, s_rms, t_rms = [], [], [], True, [], []
-            np.savez_compressed(out / "batches" / f"update_{u:03d}.npz", events=np.array(idx), demo=demo, **{f"image_{j}": s["request"]["observation/image"] for j, s in enumerate(sel)}, **{f"wrist_{j}": s["request"]["observation/wrist_image"] for j, s in enumerate(sel)}, **{f"state_{j}": s["request"]["observation/state"] for j, s in enumerate(sel)}, **{f"x0_{j}": s["x0"] for j, s in enumerate(sel)}, **{f"eps_{j}": s["eps"] for j, s in enumerate(sel)}, **{f"chain_{j}": s["chain"] for j, s in enumerate(sel)})
+            kls, gaps, chain_rel, finite, s_rms, t_rms, errs = [], [], [], True, [], [], []
+            np.savez_compressed(out / "batches" / f"update_{u:03d}.npz", events=np.array(idx), demo=demo, controller=state_box["controller"], phases=np.array([str(p) for p in sel_phase]), **{f"snap_{j}": s["snap"] for j, s in enumerate(sel) if s["snap"] is not None}, **{f"physical_{j}": s["physical"] for j, s in enumerate(sel)}, **{f"image_{j}": s["request"]["observation/image"] for j, s in enumerate(sel)}, **{f"wrist_{j}": s["request"]["observation/wrist_image"] for j, s in enumerate(sel)}, **{f"state_{j}": s["request"]["observation/state"] for j, s in enumerate(sel)}, **{f"x0_{j}": s["x0"] for j, s in enumerate(sel)}, **{f"eps_{j}": s["eps"] for j, s in enumerate(sel)}, **{f"chain_{j}": s["chain"] for j, s in enumerate(sel)})
             for j, (ev, p) in enumerate(zip(sel, prep)):
                 for m in range(M):
                     x0, eps = (ev["x0"], ev["eps"]) if m == 0 else event_noise(seed_ok(450000 + 1000 * u + 10 * j + m), cfg)
@@ -310,12 +405,14 @@ def main():
                         acc[k] = acc[k] + np.asarray(gh[k]).astype(np.float32)
                     del g, gh
                     parts = kl_parts(aux["vs"], aux["vt"])
+                    parts["phase"] = sel_phase[j]
                     kls.append(parts)
                     s_rms.append(float(np.sqrt(np.mean(aux["vs"] ** 2))))
                     t_rms.append(float(np.sqrt(np.mean(aux["vt"] ** 2))))
                     if m == 0:
                         c = np.asarray(ev["chain"], np.float64)
                         chain_rel.append(float(np.linalg.norm(np.asarray(aux["chain"], np.float64) - c) / np.linalg.norm(c)))
+                        errs.append({**act_error(theta, p, ev["x0"]), "phase": sel_phase[j]})
                     if do_det:
                         gdt = flat(j_det(theta, p["ob"], p["sm"], p["sk"], p["tm"], p["tk"], jnp.asarray(aux["chain"])))
                         for k in keys:
@@ -372,7 +469,9 @@ def main():
                 c[0] += int(np.count_nonzero(eff[k]))
                 c[1] += int(eff[k].size)
             state_finite = all(bool(np.isfinite(np.asarray(x)).all()) for x in jax.tree.leaves(opt_state) if hasattr(x, "shape") and jnp.issubdtype(jnp.asarray(x).dtype, jnp.floating))
-            row = {"update": u + 1, "demo": demo, "rollout_success": res["success"], "rollout_steps": res["steps"], "rollout_reward": res["reward"], "kl_mean": float(np.mean([x["full"] for x in kls])), "kl_executed": float(np.mean([x["executed"] for x in kls])), "kl_unexecuted": float(np.mean([x["unexecuted"] for x in kls])), "kl_padded": float(np.mean([x["padded"] for x in kls])), "grad_norm": gn, "grad_lora_a": gr["lora_a"], "grad_lora_b": gr["lora_b"], "grad_heads": gr["heads"], "clip_scale": min(1.0, CLIP / gn), "master_step": iin, "forward_step": ein, "forward_over_master": ein / iin if iin else None, "cos_forward_master": dot(eff, intended) / (ein * iin) if ein and iin else None, "changed_lora_a": ch["lora_a"][0] / ch["lora_a"][1], "changed_lora_b": ch["lora_b"][0] / ch["lora_b"][1], "changed_heads": ch["heads"][0] / ch["heads"][1], "master_norm": sum(float(np.sum(v.astype(np.float64) ** 2)) for v in new_np.values()) ** 0.5, "chain_rel_max": max(chain_rel), "velocity_rms_student": float(np.mean(s_rms)), "velocity_rms_teacher": float(np.mean(t_rms)), "finite": bool(finite and state_finite), "seconds": time.perf_counter() - t_u}
+            row = {"update": u + 1, "demo": demo, "rollout_success": res["success"], "rollout_steps": res["steps"], "rollout_reward": res["reward"], "kl_mean": float(np.mean([x["full"] for x in kls])), "kl_executed": float(np.mean([x["executed"] for x in kls])), "kl_unexecuted": float(np.mean([x["unexecuted"] for x in kls])), "kl_padded": float(np.mean([x["padded"] for x in kls])), "grad_norm": gn, "grad_lora_a": gr["lora_a"], "grad_lora_b": gr["lora_b"], "grad_heads": gr["heads"], "clip_scale": min(1.0, CLIP / gn), "master_step": iin, "forward_step": ein, "forward_over_master": ein / iin if iin else None, "cos_forward_master": dot(eff, intended) / (ein * iin) if ein and iin else None, "changed_lora_a": ch["lora_a"][0] / ch["lora_a"][1], "changed_lora_b": ch["lora_b"][0] / ch["lora_b"][1], "changed_heads": ch["heads"][0] / ch["heads"][1], "master_norm": sum(float(np.sum(v.astype(np.float64) ** 2)) for v in new_np.values()) ** 0.5, "chain_rel_max": max(chain_rel), "velocity_rms_student": float(np.mean(s_rms)), "velocity_rms_teacher": float(np.mean(t_rms)), "finite": bool(finite and state_finite), "seconds": time.perf_counter() - t_u,
+                   "controller": state_box["controller"], "teacher_tries": len(tries), "act_xyz": float(np.mean([e["xyz"] for e in errs])), "act_rot": float(np.mean([e["rot"] for e in errs])), "act_grip_agree": float(np.mean([e["grip_agree"] for e in errs])),
+                   **{f"kl_{p}": float(np.mean([x["full"] for x in kls if x["phase"] == p])) if any(x["phase"] == p for x in kls) else None for p in PHASES}, **{f"act_xyz_{p}": float(np.mean([e["xyz"] for e in errs if e["phase"] == p])) if any(e["phase"] == p for e in errs) else None for p in PHASES}, **{f"n_{p}": sum(x == p for x in sel_phase) for p in PHASES}}
             metrics.append(row)
             with csv_path.open("a", newline="") as f:
                 wr = csv.DictWriter(f, fieldnames=list(row))
@@ -410,6 +509,10 @@ def main():
             if u in CKPT_AT:
                 np.savez(out / "checkpoints" / f"adapter_{u:03d}.npz", **{k.replace("/", "__"): master[k] for k in keys})
             save()
+            if a.stop_after is not None and u == a.stop_after:
+                save_state()
+                stop_reason = f"paused after update {u} for review"
+                break
     finally:
         with srv.lock:
             srv.stop = True
