@@ -1,8 +1,9 @@
 """Single-task teacher-only pathwise OPD for one LoRA student. Fresh on-policy episode before every update; reward logged, never used. Stops at a gate rather than continuing on a finite loss.
+The default recipe (teacher warm-start, then student rollouts with the replay buffer; matched the teacher on t35) is scripts/opd_distill.sh, which calls this trainer twice.
   CLVLA_USE_GPU=1 CLVLA_GPU=G PYTHONPATH=scripts:tests/ogpo_port scripts/py-policy scripts/opd_lora_train.py --teacher-run D --name student10d --out O --updates 100 --position 4 --adapter-seed 7
 Fixed before the first run: AdamW as in the repository's recipe (lr 5e-5, b1 .9, b2 .95, eps 1e-8, wd 1e-10, clip 1.0); 8 evenly spaced observations and 2 trajectories per observation per update (recorded noise + fresh noise); training states demo_0..N-1 in order (--train-demos).
 Gate after update 1: forward parameters changed, and fresh-noise paired KL 95% interval lies below zero. Later stops: non-finite values, or diagnostic KL above 1.5x its initial value.
-Curriculum options (defaults reproduce the runs above): --teacher-control-updates N lets the teacher's ODE actions drive the environment for updates 1..N while the student still samples its own SDE chains on every observation and the loss is unchanged; with --teacher-success-only a failed teacher episode is re-rolled from a new start (seed 920000 + 10u + try) and never trained on. Teacher-controlled updates pick the 8 observations by phase (2 approach, 2 pre-contact, 2 contact before the door moves, 2 early opening down to -0.8 rad). --stop-after U saves the full training state (FP32 master, optimizer state, diagnostic reference) and exits; --resume continues the same run directory from it.
+Curriculum options (defaults reproduce the runs above): --teacher-control-updates N lets the teacher's ODE actions drive the environment for updates 1..N while the student still samples its own SDE chains on every observation and the loss is unchanged; with --teacher-success-only a failed teacher episode is re-rolled from a new start (seed 920000 + 10u + try) and never trained on. Teacher-controlled updates pick the 8 observations by phase (2 approach, 2 pre-contact, 2 contact before the door moves, 2 early opening down to -0.8 rad). Student-driven updates can use several episodes (--rollouts-per-update), a per-phase replay buffer of observations (--replay-per-update, --replay-capacity; class Replay) and a behaviour stop on robot-door contact (--stop-contact-rate). --stop-after U saves the full training state (FP32 master, optimizer state, diagnostic reference) and exits; --resume continues the same run directory from it.
 """
 
 from __future__ import annotations
@@ -77,6 +78,51 @@ def select(events, stratified):
         rest = [i for i in by[p] if i not in pick]
         pick += spread(rest, min(B_OBS - len(set(pick)), len(rest)))
     return sorted(set(pick))[:B_OBS]
+
+
+class Replay:
+    """Per-phase observation reservoirs (images, state, prompt; never actions or teacher outputs: labels are recomputed on the current student's own chain at every use).
+    Each phase holds at most `capacity`. Teacher-driven entries are kept apart and never evicted (at most half the capacity); student entries fill the rest by reservoir sampling, so they stay a uniform sample of every student state seen so far."""
+
+    def __init__(self, capacity, seed):
+        self.cap, self.rng = capacity, np.random.default_rng(seed)
+        self.pool = {s: {p: [] for p in PHASES} for s in ("teacher", "student")}
+        self.seen = {p: 0 for p in PHASES}
+
+    def add(self, request, phase, source):
+        if phase is None:
+            return
+        if source == "teacher":
+            if len(self.pool["teacher"][phase]) < self.cap // 2:
+                self.pool["teacher"][phase].append(request)
+            return
+        self.seen[phase] += 1
+        room, s = self.cap - len(self.pool["teacher"][phase]), self.pool["student"][phase]
+        if len(s) < room:
+            s.append(request)
+        else:
+            j = int(self.rng.integers(self.seen[phase]))
+            if j < room:
+                s[j] = request
+
+    def sample(self, n):
+        """n draws, spread evenly over approach, pre-contact, contact, opening (shortfalls from contact, opening, pre-contact, late, approach); within a phase, teacher or student pool 50/50 when both are non-empty."""
+        order, fill = ("approach", "precontact", "contact", "opening"), ("contact", "opening", "precontact", "late", "approach")
+        want = [order[i % 4] for i in range(n)]
+        out = []
+        for p in want:
+            if not any(self.pool[s][p] for s in self.pool):
+                p = next((q for q in fill if any(self.pool[s][q] for s in self.pool)), None)
+                if p is None:
+                    break
+            srcs = [s for s in ("teacher", "student") if self.pool[s][p]]
+            src = srcs[int(self.rng.integers(len(srcs)))]
+            pool = self.pool[src][p]
+            out.append((pool[int(self.rng.integers(len(pool)))], p, src))
+        return out
+
+    def sizes(self):
+        return {f"{s}_{p}": len(v) for s in self.pool for p, v in self.pool[s].items()}
 
 
 def release(tag):
@@ -158,6 +204,14 @@ def main():
     ap.add_argument("--max-teacher-tries", type=int, default=10)
     ap.add_argument("--stop-after", type=int, default=None, help="save the full training state after this update and exit")
     ap.add_argument("--resume", action="store_true", help="continue from <out>/state")
+    ap.add_argument("--rollouts-per-update", type=int, default=1, help="student-driven updates: episodes per update (starts 900000 + R*u + r when R > 1), 8 evenly spaced observations from each")
+    ap.add_argument("--chains-per-obs", type=int, default=M, help="noise draws per observation (the first is the rollout's own)")
+    ap.add_argument("--replay-per-update", type=int, default=0, help="observations drawn from the replay buffer per update (0: no buffer)")
+    ap.add_argument("--replay-capacity", type=int, default=1000, help="per phase; teacher-driven entries at most half")
+    ap.add_argument("--replay-seed", type=int, default=7)
+    ap.add_argument("--stop-contact-rate", type=float, default=0.0, help="stop when the share of student episodes with robot-door contact over the last --stop-window falls below this (0: off)")
+    ap.add_argument("--stop-window", type=int, default=100)
+    ap.add_argument("--stop-min-episodes", type=int, default=200)
     a = ap.parse_args()
     out = Path(a.out)
     (out / "checkpoints").mkdir(parents=True, exist_ok=True)
@@ -197,11 +251,12 @@ def main():
     release("student_built")
     R["identity"] = {"base_sha": base_sha, "teacher_sha": t_sha, "teacher_checkpoint": str(tck), "teacher_step": tstep, "teacher_fingerprint": t_summary.get("trained_checkpoint_fingerprint"), "adapter_seed": a.adapter_seed, "initial_adapter_sha": adapter_sha, "frozen_student_sha": frozen_sha, "n_trainable": int(sum(v.size for v in adapter0.values())), "n_lora_b": int(sum(v.size for k, v in adapter0.items() if "lora_b" in k)), "leaves": len(keys)}
     R["curriculum"] = {"teacher_control_updates": a.teacher_control_updates, "teacher_success_only": a.teacher_success_only, "max_teacher_tries": a.max_teacher_tries, "teacher_actions": "ODE, OpenPI sample_actions with the event noise", "selection": "phase-stratified while the teacher drives, evenly spaced otherwise"}
+    R["student_phase"] = {"rollouts_per_update": a.rollouts_per_update, "chains_per_obs": a.chains_per_obs, "replay_per_update": a.replay_per_update, "replay_capacity_per_phase": a.replay_capacity, "replay_seed": a.replay_seed, "stop_contact_rate": a.stop_contact_rate, "stop_window": a.stop_window, "stop_min_episodes": a.stop_min_episodes}
     if prev:
         for k in ("identity", "teacher_rebuild"):
             same = {f: prev[k][f] == R[k][f] for f in R.get(k, {}) if f in prev.get(k, {})}
             assert all(same.values()), f"resume: {k} differs from the saved run: {same}"
-        R.update({k: prev[k] for k in ("diagnostic", "direct_vs_state", "sanity", "routing_vlm_nonzero", "phase1") if k in prev})
+        R.update({k: prev[k] for k in ("diagnostic", "direct_vs_state", "sanity", "routing_vlm_nonzero", "phase1", "replay") if k in prev})
         R["resumed"] = {"from_update": prev.get("completed_updates"), "time": time.time()}
     save()
     if not a.resume:
@@ -349,35 +404,68 @@ def main():
         np.savez(out / "state" / "opt_state.npz", **{f"l{i:04d}": np.asarray(l) for i, l in enumerate(jax.tree.leaves(opt_state))})
         (out / "state" / "state.json").write_text(json.dumps({"update": u, "time": time.time(), "master_sha": hashlib.sha256(b"".join(master[k].tobytes() for k in keys)).hexdigest()}))
 
+    replay = Replay(a.replay_capacity, a.replay_seed) if a.replay_per_update else None
+    if replay is not None:
+        # teacher-driven observations already in this run's batches (the cold start) seed the teacher pool
+        prompt = str(np.load(out / "state" / "diag.npz")["prompt"]) if (out / "state" / "diag.npz").exists() else None
+        for bf in sorted((out / "batches").glob("update_*.npz")):
+            zb = np.load(bf)
+            if "controller" not in zb.files or str(zb["controller"]) != "teacher":
+                continue
+            for j, ph in enumerate(zb["phases"]):
+                replay.add({"observation/image": zb[f"image_{j}"], "observation/wrist_image": zb[f"wrist_{j}"], "observation/state": zb[f"state_{j}"], "prompt": prompt}, None if str(ph) == "None" else str(ph), "teacher")
+        R["replay"] = {"seeded_from_batches": replay.sizes()}
+        print("[replay] seeded", json.dumps(replay.sizes()), flush=True)
+    episode_contact = []
     try:
         while u < a.updates:
             t_u = time.perf_counter()
             state_box["controller"] = "teacher" if u < a.teacher_control_updates else "student"
             teacher_drives = state_box["controller"] == "teacher"
-            demo = 900000 + u if a.random_starts else u % a.train_demos
-            tries = []
-            for t_i in range(a.max_teacher_tries if teacher_drives and a.teacher_success_only else 1):
-                demo = demo if t_i == 0 else 920000 + 10 * u + t_i
-                events, res = collect(demo, 400000 + 1000 * u + 100 * t_i)
-                tries.append({"demo": demo, "success": res["success"], "steps": res["steps"], "error": res["error"]})
-                if res["success"] or res["error"]:
+            n_roll = 1 if teacher_drives else a.rollouts_per_update
+            demo0 = (900000 + u if n_roll == 1 else 900000 + n_roll * u) if a.random_starts else u % a.train_demos
+            tries, runs = [], []
+            for r_i in range(n_roll):
+                for t_i in range(a.max_teacher_tries if teacher_drives and a.teacher_success_only else 1):
+                    demo = demo0 + r_i if t_i == 0 else 920000 + 10 * u + t_i
+                    events, res = collect(demo, 400000 + 1000 * u + 100 * (t_i + r_i))
+                    tries.append({"demo": demo, "success": res["success"], "steps": res["steps"], "error": res["error"]})
+                    if res["success"] or res["error"]:
+                        break
+                runs.append((demo, events, res))
+                phase_counts = {p: sum(phase_of(e["snap"]) == p for e in events) for p in PHASES}
+                rollouts.append({"update": u, "rollout": r_i, "demo": demo, **res, "events": len(events), "controller": state_box["controller"], "tries": tries if teacher_drives else None, "phase_counts": phase_counts})
+                with roll_path.open("a") as f:
+                    f.write(json.dumps(rollouts[-1], default=str) + "\n")
+                if res["error"]:
                     break
+                if not teacher_drives:
+                    episode_contact.append(res.get("first_contact") is not None)
             if u == 0:
                 release("after_first_rollout")
-            phase_counts = {p: sum(phase_of(e["snap"]) == p for e in events) for p in PHASES}
-            rollouts.append({"update": u, "demo": demo, **res, "events": len(events), "controller": state_box["controller"], "tries": tries, "phase_counts": phase_counts})
-            with roll_path.open("a") as f:
-                f.write(json.dumps(rollouts[-1], default=str) + "\n")
+            res = runs[-1][2]
             if res["error"]:
                 stop_reason = f"rollout error: {res['error']}"
                 break
             if teacher_drives and a.teacher_success_only and not res["success"]:
                 stop_reason = f"no successful teacher episode in {len(tries)} tries at update {u + 1}"
                 break
-            idx = select(events, teacher_drives)
-            sel = [events[i] for i in idx]
-            sel_phase = [phase_of(e["snap"]) for e in sel]
-            prep = [prepare(e) for e in sel]
+            sel, idx = [], []
+            for demo, events, res_r in runs:
+                idx_r = select(events, teacher_drives)
+                idx += idx_r
+                sel += [dict(events[i], source=state_box["controller"]) for i in idx_r]
+                if replay is not None:
+                    for e in events:
+                        replay.add(e["request"], phase_of(e["snap"]), state_box["controller"])
+            n_fresh = len(sel)
+            if replay is not None and not teacher_drives:
+                for r_i, (req, ph, src) in enumerate(replay.sample(a.replay_per_update)):
+                    x0r, epsr = event_noise(seed_ok(2000000 + 1000 * u + r_i), cfg)
+                    sel.append({"request": req, "x0": x0r, "eps": epsr, "chain": None, "snap": None, "physical": None, "replay_phase": ph, "source": "replay_" + src})
+            sel_phase = [e["replay_phase"] if "replay_phase" in e else phase_of(e["snap"]) for e in sel]
+            # prefix caches are kept for the whole batch only where the first update's diagnostics need them; otherwise built one observation at a time (40 at once do not fit)
+            prep = [prepare(e) for e in sel] if diag_prep is None or u == 0 else None
             if diag_prep is None:
                 diag_prep = prep
                 diag0 = diag_eval(theta, diag_prep, 500000, N_DIAG)
@@ -393,9 +481,10 @@ def main():
             acc_det = {k: 0.0 for k in keys}
             do_det = u % DIRECT_EVERY == 0
             kls, gaps, chain_rel, finite, s_rms, t_rms, errs = [], [], [], True, [], [], []
-            np.savez_compressed(out / "batches" / f"update_{u:03d}.npz", events=np.array(idx), demo=demo, controller=state_box["controller"], phases=np.array([str(p) for p in sel_phase]), **{f"snap_{j}": s["snap"] for j, s in enumerate(sel) if s["snap"] is not None}, **{f"physical_{j}": s["physical"] for j, s in enumerate(sel)}, **{f"image_{j}": s["request"]["observation/image"] for j, s in enumerate(sel)}, **{f"wrist_{j}": s["request"]["observation/wrist_image"] for j, s in enumerate(sel)}, **{f"state_{j}": s["request"]["observation/state"] for j, s in enumerate(sel)}, **{f"x0_{j}": s["x0"] for j, s in enumerate(sel)}, **{f"eps_{j}": s["eps"] for j, s in enumerate(sel)}, **{f"chain_{j}": s["chain"] for j, s in enumerate(sel)})
-            for j, (ev, p) in enumerate(zip(sel, prep)):
-                for m in range(M):
+            np.savez_compressed(out / "batches" / f"update_{u:03d}.npz", events=np.array(idx), demo=np.array([d for d, _, _ in runs]), controller=state_box["controller"], phases=np.array([str(p) for p in sel_phase]), sources=np.array([s.get("source", state_box["controller"]) for s in sel]), **{f"snap_{j}": s["snap"] for j, s in enumerate(sel) if s["snap"] is not None}, **{f"physical_{j}": s["physical"] for j, s in enumerate(sel) if s["physical"] is not None}, **{f"image_{j}": s["request"]["observation/image"] for j, s in enumerate(sel)}, **{f"wrist_{j}": s["request"]["observation/wrist_image"] for j, s in enumerate(sel)}, **{f"state_{j}": s["request"]["observation/state"] for j, s in enumerate(sel)}, **{f"x0_{j}": s["x0"] for j, s in enumerate(sel)}, **{f"eps_{j}": s["eps"] for j, s in enumerate(sel)}, **{f"chain_{j}": s["chain"] for j, s in enumerate(sel) if s["chain"] is not None})
+            for j, ev in enumerate(sel):
+                p = prep[j] if prep is not None else prepare(ev)
+                for m in range(a.chains_per_obs):
                     x0, eps = (ev["x0"], ev["eps"]) if m == 0 else event_noise(seed_ok(450000 + 1000 * u + 10 * j + m), cfg)
                     (val, aux), g = j_grad(theta, p["ob"], p["sm"], p["sk"], p["tm"], p["tk"], x0, eps)
                     aux = jax.tree.map(np.asarray, aux)
@@ -406,13 +495,15 @@ def main():
                     del g, gh
                     parts = kl_parts(aux["vs"], aux["vt"])
                     parts["phase"] = sel_phase[j]
+                    parts["replay"] = j >= n_fresh
                     kls.append(parts)
                     s_rms.append(float(np.sqrt(np.mean(aux["vs"] ** 2))))
                     t_rms.append(float(np.sqrt(np.mean(aux["vt"] ** 2))))
-                    if m == 0:
+                    if m == 0 and ev["chain"] is not None:
                         c = np.asarray(ev["chain"], np.float64)
                         chain_rel.append(float(np.linalg.norm(np.asarray(aux["chain"], np.float64) - c) / np.linalg.norm(c)))
-                        errs.append({**act_error(theta, p, ev["x0"]), "phase": sel_phase[j]})
+                    if m == 0:
+                        errs.append({**act_error(theta, p, ev["x0"]), "phase": sel_phase[j], "replay": j >= n_fresh})
                     if do_det:
                         gdt = flat(j_det(theta, p["ob"], p["sm"], p["sk"], p["tm"], p["tk"], jnp.asarray(aux["chain"])))
                         for k in keys:
@@ -420,7 +511,7 @@ def main():
                         del gdt
             if u == 0:
                 release("after_first_gradients")
-            n_traj = len(sel) * M
+            n_traj = len(sel) * a.chains_per_obs
             g_m = {k: acc[k] / n_traj for k in keys}
             dot = lambda x, y: sum(float(np.sum(np.asarray(x[k], np.float64) * np.asarray(y[k], np.float64))) for k in keys)  # noqa: E731
             gn = dot(g_m, g_m) ** 0.5
@@ -469,16 +560,26 @@ def main():
                 c[0] += int(np.count_nonzero(eff[k]))
                 c[1] += int(eff[k].size)
             state_finite = all(bool(np.isfinite(np.asarray(x)).all()) for x in jax.tree.leaves(opt_state) if hasattr(x, "shape") and jnp.issubdtype(jnp.asarray(x).dtype, jnp.floating))
-            row = {"update": u + 1, "demo": demo, "rollout_success": res["success"], "rollout_steps": res["steps"], "rollout_reward": res["reward"], "kl_mean": float(np.mean([x["full"] for x in kls])), "kl_executed": float(np.mean([x["executed"] for x in kls])), "kl_unexecuted": float(np.mean([x["unexecuted"] for x in kls])), "kl_padded": float(np.mean([x["padded"] for x in kls])), "grad_norm": gn, "grad_lora_a": gr["lora_a"], "grad_lora_b": gr["lora_b"], "grad_heads": gr["heads"], "clip_scale": min(1.0, CLIP / gn), "master_step": iin, "forward_step": ein, "forward_over_master": ein / iin if iin else None, "cos_forward_master": dot(eff, intended) / (ein * iin) if ein and iin else None, "changed_lora_a": ch["lora_a"][0] / ch["lora_a"][1], "changed_lora_b": ch["lora_b"][0] / ch["lora_b"][1], "changed_heads": ch["heads"][0] / ch["heads"][1], "master_norm": sum(float(np.sum(v.astype(np.float64) ** 2)) for v in new_np.values()) ** 0.5, "chain_rel_max": max(chain_rel), "velocity_rms_student": float(np.mean(s_rms)), "velocity_rms_teacher": float(np.mean(t_rms)), "finite": bool(finite and state_finite), "seconds": time.perf_counter() - t_u,
+            rs = [r_ for _, _, r_ in runs]
+            row = {"update": u + 1, "demo": runs[0][0], "rollout_success": sum(bool(r_["success"]) for r_ in rs), "rollout_steps": float(np.mean([r_["steps"] for r_ in rs])), "rollout_reward": float(sum(r_["reward"] for r_ in rs)), "rollouts": len(rs), "roll_near": sum(r_.get("first_near") is not None for r_ in rs), "roll_contact": sum(r_.get("first_contact") is not None for r_ in rs), "roll_door_moved": sum(r_.get("door_onset") is not None for r_ in rs), "n_fresh": n_fresh, "n_replay": len(sel) - n_fresh, "kl_mean": float(np.mean([x["full"] for x in kls])), "kl_executed": float(np.mean([x["executed"] for x in kls])), "kl_unexecuted": float(np.mean([x["unexecuted"] for x in kls])), "kl_padded": float(np.mean([x["padded"] for x in kls])), "grad_norm": gn, "grad_lora_a": gr["lora_a"], "grad_lora_b": gr["lora_b"], "grad_heads": gr["heads"], "clip_scale": min(1.0, CLIP / gn), "master_step": iin, "forward_step": ein, "forward_over_master": ein / iin if iin else None, "cos_forward_master": dot(eff, intended) / (ein * iin) if ein and iin else None, "changed_lora_a": ch["lora_a"][0] / ch["lora_a"][1], "changed_lora_b": ch["lora_b"][0] / ch["lora_b"][1], "changed_heads": ch["heads"][0] / ch["heads"][1], "master_norm": sum(float(np.sum(v.astype(np.float64) ** 2)) for v in new_np.values()) ** 0.5, "chain_rel_max": max(chain_rel) if chain_rel else None, "velocity_rms_student": float(np.mean(s_rms)), "velocity_rms_teacher": float(np.mean(t_rms)), "finite": bool(finite and state_finite), "seconds": time.perf_counter() - t_u,
                    "controller": state_box["controller"], "teacher_tries": len(tries), "act_xyz": float(np.mean([e["xyz"] for e in errs])), "act_rot": float(np.mean([e["rot"] for e in errs])), "act_grip_agree": float(np.mean([e["grip_agree"] for e in errs])),
+                   "kl_fresh": float(np.mean([x["full"] for x in kls if not x["replay"]])) if any(not x["replay"] for x in kls) else None, "kl_replay": float(np.mean([x["full"] for x in kls if x["replay"]])) if any(x["replay"] for x in kls) else None,
+                   **({f"buf_{k}": v for k, v in replay.sizes().items()} if replay is not None else {}),
                    **{f"kl_{p}": float(np.mean([x["full"] for x in kls if x["phase"] == p])) if any(x["phase"] == p for x in kls) else None for p in PHASES}, **{f"act_xyz_{p}": float(np.mean([e["xyz"] for e in errs if e["phase"] == p])) if any(e["phase"] == p for e in errs) else None for p in PHASES}, **{f"n_{p}": sum(x == p for x in sel_phase) for p in PHASES}}
             metrics.append(row)
+            if csv_path.exists() and csv_path.read_text().split("\n", 1)[0] != ",".join(row):
+                csv_path = out / f"training_metrics_from_u{u:03d}.csv"  # a resumed run with new columns gets its own file
             with csv_path.open("a", newline="") as f:
                 wr = csv.DictWriter(f, fieldnames=list(row))
-                if u == 0:
+                if f.tell() == 0:
                     wr.writeheader()
                 wr.writerow(row)
             print("[update]", json.dumps(row), flush=True)
+            if replay is not None:
+                R["replay"]["sizes"], R["replay"]["student_seen"] = replay.sizes(), dict(replay.seen)
+            w_ = episode_contact[-a.stop_window:]
+            if a.stop_contact_rate > 0 and len(episode_contact) >= a.stop_min_episodes and np.mean(w_) < a.stop_contact_rate:
+                stop_reason = f"behaviour stop: robot-door contact in {sum(w_)}/{len(w_)} of the last student episodes, below {a.stop_contact_rate}"
             if not row["finite"]:
                 stop_reason = "non-finite gradient or optimizer state"
                 break
@@ -512,6 +613,8 @@ def main():
             if a.stop_after is not None and u == a.stop_after:
                 save_state()
                 stop_reason = f"paused after update {u} for review"
+                break
+            if stop_reason and stop_reason.startswith("behaviour stop"):
                 break
     finally:
         with srv.lock:

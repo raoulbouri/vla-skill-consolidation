@@ -1,0 +1,19 @@
+{
+ "written": "2026-11-03, before any update of this run",
+ "experiment": "Student-driven OPD with 4 rollouts per update and a per-phase replay buffer, continuing the warm-started update-100 student (t35, Teacher-10D)",
+ "question": "Does more student data per update plus replayed teacher-driven and past student states keep the competence gained in Phase 1 (gate: contact 35/40, door moved 22/40) while the student drives, unlike the stopped Phase 2 (contact 0 after about update 150)?",
+ "start": "branch of outputs/opd_t35_curriculum/20261103T021211Z_teacher_warmstart at its saved update-100 state (scripts/opd_curr_branch.py); the source run is not modified",
+ "teacher": "Teacher-10D (expert300m-10demos-s250 t35), delta sha256 prefix 8cfc9c41f741cea3; the LoRA 25-demo teacher is reserved for the next curriculum run",
+ "unchanged": ["pathwise path-KL objective and weights", "SDE sampler sigma 0.05, K 10", "LoRA student and trainable leaves", "AdamW lr 5e-5, b1 .9, b2 .95, eps 1e-8, wd 1e-10, clip 1.0", "FP32 master on CPU", "action protocol", "random starts with 0.04 rad arm noise", "numerical stop rules"],
+ "changed": {
+  "rollouts_per_update": "4 student episodes, starts 900000 + 4u + r, rollout noise 400000 + 1000u + 100r",
+  "observations": "8 evenly spaced per episode (32 fresh) + 8 replayed",
+  "chains_per_observation": "1 (the rollout's own noise; replayed observations get fresh noise 2000000 + 1000u + r)",
+  "replay_buffer": "observations only (images, state, prompt); labels recomputed on the current student's chain at every use; 5 phase reservoirs (approach, pre-contact, contact, early opening to -0.8 rad, later opening) of at most 1000 each; teacher-driven entries (seeded from this run's 100 Phase-1 batches, then never evicted) at most 500 per phase; student entries from every decision point of every Phase-2 episode fill the rest by reservoir sampling",
+  "replay_draw": "8 per update: 2 approach, 2 pre-contact, 2 contact, 2 opening (shortfalls from contact, opening, pre-contact, later opening, approach); teacher or student pool 50/50 when both exist",
+  "behaviour_stop": "stop when robot-door contact occurs in fewer than 5% of the last 100 student episodes, checked from 200 episodes (update 150) on; evaluation still runs on the last checkpoint"
+ },
+ "updates": "101-500 (400 student-driven updates)",
+ "evaluation": {"held_out": "demo_10..49, ODE primary and SDE secondary, geometry; base, Teacher-10D, previous Student500, update 100, update 300 (if reached), final", "development_set": "starts 960000-960039: final-checkpoint rollouts and takeover, action error and KL decomposition across all checkpoints", "no_checkpoint_selection_on_held_out": true},
+ "success_criteria_reported": ["final ODE success vs Teacher-10D with paired bootstrap CI and McNemar p (similar rule: upper limit of teacher - student <= 0.15)", "contact and door-movement rates on own training rollouts across updates", "held-out handle reach, contact, door movement"]
+}

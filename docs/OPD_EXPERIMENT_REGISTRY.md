@@ -60,9 +60,11 @@ Synced on 2026-11-02 with xulab as the source of truth; both machines hold ident
 | `combined_serve.py`, `combined_eval.py`, `combined_worker.sh` | Combined Stage 1 teacher evaluation; serve and eval reused by later runs |
 | `opd_export_teacher_delta.py` | Export a teacher's changed leaves for transfer to xulab |
 | `opd_lora_student.py`, `opd_lora_train.py`, `opd_lora_collect.py` | LoRA student and OPD trainer |
-| `opd_t35_500.sh`, `opd_t35_compare.py` | 100- and 500-update t35 runs and their evaluation |
+| `opd_t35_compare.py` | Evaluation of the 100- and 500-update t35 runs |
 | `opd_diag_rollout.py`, `opd_diag_takeover.py`, `opd_diag_score.py`, `opd_diag_worker.sh` | Diagnostics Exp 1-3 (now take `--start-seed0`, `--noise-seed0`; scorer takes `--ckpts`, `--teacher-set`, `--student-set`, `--compare-ckpt`, `--out-name`) |
-| `opd_curr_phase1.sh`, `opd_curr_phase2.sh`, `opd_curr_gate.py`, `opd_curr_compare.py` | Two-phase curriculum (section 7) |
+| `opd_distill.sh` | **Default distillation recipe** (section 8): warm-start, student rollouts with replay, held-out teacher-vs-student evaluation |
+| `opd_curr_compare.py` | Held-out comparison with geometry (used by `opd_distill.sh`; takes the teacher's policy id) |
+| `opd_curr_gate.py` | Update-100 gate of section 7 (optional diagnostic, with `opd_diag_*`) |
 
 ## 6. Handoff (2026-11-02)
 
@@ -77,4 +79,24 @@ Run: xulab `outputs/opd_t35_curriculum/20261103T021211Z_teacher_warmstart` (firs
 
 Preregistration: xulab `outputs/opd_t35_curriculum/preregistration.json`. New trainer options in `opd_lora_train.py`, all off by default so earlier runs reproduce: `--teacher-control-updates`, `--teacher-success-only`, `--max-teacher-tries`, `--stop-after`, `--resume`. The collector now attaches a geometry snapshot to each request and reports handle reach, contact and door onset; `combined_eval.py --geometry` adds the same to held-out episodes.
 Smoke tests (xulab `outputs/opd_t35_curriculum/smoke_trainer`, deleted 2026-11-03; records in `docs/CLEANUP_MANIFEST_20261103_files.tsv.xulab`): teacher-driven update with one re-roll, pause, resume and a student-driven update all passed (fresh-noise KL 813 to 778, CI [-47, -24]; host peak 118 GiB; GPU peak 13 GiB); gate rollouts, student takeover, scorer and gate script passed; `combined_eval.py --geometry` not yet run on GPU.
-Launch: `scripts/opd_curr_phase1.sh outputs/opd_t35_curriculum/<timestamp> outputs/opd_t35_student10d/20261102T024213Z/teacher10d_t035`, then after review `scripts/opd_curr_phase2.sh <same dir> <teacher delta> outputs/opd_t35_student10d/20261102T044223Z_500updates_random_starts_arm004/student10d/checkpoints/adapter_500.npz`.
+Launched with `opd_curr_phase1.sh` and `opd_curr_phase2.sh` (removed 2026-11-03; Phase 1 is now the first half of `opd_distill.sh`).
+
+## 8. Replay-buffer Phase 2: the default distillation recipe
+
+Preregistration: `docs/OPD_REPLAY_PREREGISTRATION.json` (xulab `outputs/opd_t35_curriculum/preregistration_phase2_replay.json`). Run: xulab `outputs/opd_t35_curriculum/20261103T103057Z_phase2_replay_from_u100`, a copy of section 7's run at its saved update-100 state (made with the one-off `opd_curr_branch.py`; section 7's run is untouched), continued with 4 student episodes per update (32 fresh observations, 1 noise draw each) plus 8 observations from a per-phase replay buffer (1000 per phase; seeded with 800 teacher-driven observations from Phase 1: 200 approach, 125 pre-contact, 143 contact, 332 opening). Teacher-10D; objective, sampler, optimizer and starts unchanged.
+
+Failed attempts (`FAILED.txt` in each): `20261103T063531Z_...` out of GPU memory on a GPU shared with another user; `20261103T074405Z_...` and `20261103T101411Z_...` out of GPU memory at the first gradient because the prefix caches of all 40 observations were held at once (fixed: built one observation at a time).
+
+Training (own episodes per 25 updates, 100 episodes each; success / door moved): 101-125 4 / 29, 151-175 2 / 19, 201-225 10 / 40, 251-275 17 / 51, 301-325 39 / 62, 351-375 56 / 74, 376-400 62 / 75, 401-425 70 / 83, 426-450 68 / 85. Batch KL on fresh observations 100 to 12, on replayed 106 to 11; executed-action xyz error 0.093 to 0.029; no behaviour stop. STOPPED by the user at update 459 of 500 (`STOPPED_PHASE2.txt`) because training success had levelled off; updates after 400 were not saved, so `adapter_400.npz` was evaluated (the preregistration named the final update).
+
+Held-out demo_10..49 (development-set checks skipped at the user's request; teacher numbers identical to section 3):
+
+| Policy | ODE success | SDE success | Handle reached (ODE) | Contact | Door moved |
+|---|---|---|---|---|---|
+| Student, update 400 | 26/40 | 22/40 | 38 | 34 | 32 |
+| Teacher-10D | 24/40 | 20/40 | 35 | 34 | 26 |
+| Base | 1/40 | 0/40 | 39 | 19 | 7 |
+
+Teacher minus student ODE -0.05, CI [-0.20, 0.10], McNemar p 0.75 (teacher only 4, student only 6): **similar** under the fixed rule (upper limit 0.10 <= 0.15). SDE -0.05, CI [-0.175, 0.075], p 0.69. Student minus base ODE +0.625, CI [0.475, 0.775]. Files: `comparison.json`, `side_by_side.csv`, `logs/compare.log`, `evaluation/workers/*.jsonl`.
+
+This recipe is now `scripts/opd_distill.sh` (Phase 1 and Phase 2 in one script, 400 updates, then teacher, student and base on demo_10..49). It runs Phase 1 itself instead of branching, with otherwise identical arguments; the learning rate is constant, so updates 1-400 follow the same recipe. Removed on 2026-11-03 as replaced by it: `opd_curr_phase1.sh`, `opd_curr_phase2.sh`, `opd_curr_phase2_replay.sh`, `opd_curr_branch.py`, `opd_t35_500.sh`. Weights and results: Hugging Face, same paths.
