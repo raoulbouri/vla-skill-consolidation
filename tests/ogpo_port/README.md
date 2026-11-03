@@ -1,5 +1,7 @@
 # OGPO -> OpenPI port: verification ledger
 
+> **2026-11-03:** the Task 10 and 11 analysis scripts named below (`task10a_*` except `task10a_primal.py`, `task10_dot_diagnostic.py`, `task10b_*` except `task10b.py`, `task10c*`, `task10d*`, `task11_*`) were removed from the working tree after their results were recorded here and in `docs/TASK10_11_SUMMARY.md`; they remain in git history (`git log --diff-filter=D -- tests/ogpo_port`).
+
 CPU-only checks that OGPO's flow math (`simchowitzlabpublic/OGPO_public` @ `0b3be413cde766a41257c6b19c0c2b06393a557f`) maps
 onto OpenPI pi0.5 conventions. Run: `CUDA_VISIBLE_DEVICES= scripts/py-policy -m pytest tests/ogpo_port -q -p no:cacheprovider`
 (OGPO clone: `$OGPO_SRC`, else `~/IRL-project-refs/OGPO_public`, else the xulab refs path).

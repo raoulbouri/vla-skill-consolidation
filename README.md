@@ -16,7 +16,7 @@ We study sequential imitation learning from the open-source **π₀.₅-LIBERO**
 | OGPO port for π₀.₅ (Tasks 1-11): stochastic sampler, exact path log-probability, path KL, pathwise gradient | Tasks 5-9 frozen; Task 10 gradient validation inconclusive (`docs/TASK10_11_SUMMARY.md`) |
 | On-policy distillation (OPD) pilots on t35 "open the microwave" with a LoRA student and Teacher-10D | KL 10x lower, executed-action error 3-4x lower, but 0/40 held-out success vs teacher 24/40 |
 | Diagnostics of that failure | Main cause: the student rarely reaches the handle (12/40 vs base 38/40); from teacher states it finishes 19/20 at the 75% point |
-| Two-phase curriculum (teacher-controlled warm-start, gate at update 100, then on-policy OPD) | Coded, smoke-tested, preregistered; **not run yet** |
+| Two-phase curriculum (teacher-controlled warm-start, gate at update 100, then on-policy OPD) | Warm-start worked (gate PASS: update-100 student moves the door in 22/40 development episodes, 4/40 successes); student-driven Phase 2 lost it (no contact after about update 150) and was stopped at update 247; no held-out evaluation yet |
 
 Every run, path and number: `docs/OPD_EXPERIMENT_REGISTRY.md`. OGPO derivations and decisions: `tests/ogpo_port/README.md`, `docs/OGPO_AUDIT.md`.
 
@@ -100,7 +100,7 @@ To serve one for evaluation: `scripts/combined_serve.py --kind teacher_delta --t
 
 **Part 3: all 30 teachers as deltas**: `outputs/teacher_deltas/<variant>/t<LIBERO-90 index>_<task>/` with `delta.npz`, `leaf_sha.json`, `train_spec.yaml`, `summary.json`. Variants: `expert300m-10demos-s250`, `expert300m-25demos-s250` (load with `load_delta_teacher(...)`), `lora-25demos-s500` (the LoRA `teacher-n25-s500` runs: pass `paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"`). Made by `scripts/export_teacher_deltas.sh` from the full checkpoints; the three t35 deltas are byte-identical to the ones in part 1.
 
-## Next experiment: two-phase curriculum (prepared)
+## Two-phase curriculum (run 2026-11-03, see `docs/OPD_EXPERIMENT_REGISTRY.md` section 7)
 
 Teacher-10D drives the robot for updates 1-100 (successful episodes only, observations chosen by phase) while the student samples its own flow chains under the unchanged pathwise KL; the run pauses, a gate on development starts 960000-960039 decides whether to continue, and updates 101-500 run on the student's own rollouts. Preregistration: `docs/OPD_CURRICULUM_PREREGISTRATION.json`.
 
