@@ -4,7 +4,7 @@ Compact record, written 2026-11-01. The detailed ledger is `tests/ogpo_port/READ
 
 ## Standing state
 
-- Task 10, the independent validation of the real-model state-dependent pathwise gradient, is **not closed**. Its latest status is inconclusive. No historical failure has been relabelled.
+- Task 10, the independent validation of the real-model state-dependent pathwise gradient, is **closed by decision** (2026-11-03): validation is not required because distillation works downstream (see the ledger). Its finite-difference status remains inconclusive; no historical failure has been relabelled.
 - Held-out seeds 12000-12007 (observation 0), 13000-13007 (observation 1) and reserved seed 15000 are **unused**. They appear only as reservations in `task10d/preregistration.json` and `preregistration_v2.json`; no result JSON uses them, and no Phase 2 C3 or C4A run exists.
 - No v3 preregistration was written.
 - No OPD training has run. Task 11's one-step updates touched temporary parameter copies on one fixture observation only.

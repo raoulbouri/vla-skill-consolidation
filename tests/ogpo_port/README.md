@@ -1,5 +1,7 @@
 # OGPO -> OpenPI port: verification ledger
 
+> **Task 10 closed by decision (2026-11-03).** The project lead decided an independent finite-difference validation of the state-dependent pathwise gradient is not required: the teacher demonstrably distils into the student with this gradient (fresh-noise paired KL decreases in Stage 3, the one-batch checks and the curriculum sanity gate; teacher-state action error falls 3-4x over training). The FD status stays as recorded below (inconclusive); it is no longer a gate.
+
 > **2026-11-03:** the Task 10 and 11 analysis scripts named below (`task10a_*` except `task10a_primal.py`, `task10_dot_diagnostic.py`, `task10b_*` except `task10b.py`, `task10c*`, `task10d*`, `task11_*`) were removed from the working tree after their results were recorded here and in `docs/TASK10_11_SUMMARY.md`; they remain in git history (`git log --diff-filter=D -- tests/ogpo_port`).
 
 CPU-only checks that OGPO's flow math (`simchowitzlabpublic/OGPO_public` @ `0b3be413cde766a41257c6b19c0c2b06393a557f`) maps
