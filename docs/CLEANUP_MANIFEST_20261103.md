@@ -1,6 +1,6 @@
 # Cleanup, 2026-11-03
 
-Approved by the user: B1 failed and smoke run weights, B2 packaging copies already uploaded to Hugging Face, and removal of finished one-off scripts (git commit `2b06f71`, recoverable from history). Teacher optimizer state (`train_state/`, about 63 GB on aims) and the Task 10B/10C gradient dumps (43 GB on xulab) were not selected and stay. Every deleted file is listed with its size and sha256 prefix (or `hardlink` when another copy remains) in `docs/CLEANUP_MANIFEST_20261103_files.tsv.xulab` (163 files, 5.35 GiB freed) and `docs/CLEANUP_MANIFEST_20261103_files.tsv.aims` (370 files, 34.00 GiB freed).
+Approved by the user: B1 failed and smoke run weights, B2 packaging copies already uploaded to Hugging Face, and removal of finished one-off scripts (git commit `2b06f71`, recoverable from history). Later the same day the user also approved deleting the Task 10B/10C gradient dumps (group D) and the teacher optimizer state (group C), below. Every deleted file is listed with its size and sha256 prefix (or `hardlink` when another copy remains) in `docs/CLEANUP_MANIFEST_20261103_files.tsv.xulab` (163 files, 5.35 GiB freed) and `docs/CLEANUP_MANIFEST_20261103_files.tsv.aims` (370 files, 34.00 GiB freed).
 
 | Group | Machine | Path | Why safe |
 |---|---|---|---|
@@ -12,3 +12,12 @@ Approved by the user: B1 failed and smoke run weights, B2 packaging copies alrea
 | B2 | aims | `outputs/_packages/` (package 3 tar, results part, git bundle, file lists) | Package 3 contents remain in `outputs/teacher_deltas/` (30 teachers) and on Hugging Face |
 
 Kept: xulab `.env` backup moved to `outputs/_env_backup/dotenv_backup_20261103`. The curriculum run `outputs/opd_t35_curriculum/20261103T021211Z_teacher_warmstart` is untouched, including its update-100 training state.
+
+## Groups C and D (approved later on 2026-11-03)
+
+| Group | Machine | Path | Why safe |
+|---|---|---|---|
+| D | xulab | `outputs/ogpo_port/task10b/*.npz`, `outputs/ogpo_port/task10c/**/*.npz` (51 files, 44.93 GiB) | Raw Task 10 gradient dumps; Task 10 closed by decision; every result JSON kept |
+| C | aims | `outputs/specialists/*/checkpoints/*/openpi/*/train_state/` (359 files, 62.46 GiB) | Optimizer moments and step counter, needed only to resume the exact same teacher run; evaluation, deltas and further fine-tuning use `params/` (all 30 intact, all 30 index links resolve) |
+
+Rows are appended to the same per-machine TSV files with groups C and D.

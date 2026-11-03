@@ -16,7 +16,7 @@ Written 2026-11-02. Covers every training run and experiment on `aims` (`/usr1/h
 | Student-10D, 100 updates | xulab | `outputs/opd_t35_student10d/20261102T024213Z/student10d/checkpoints/adapter_{000..100}.npz` | |
 | Student-10D, 500 updates (baseline for the next run) | xulab | `outputs/opd_t35_student10d/20261102T044223Z_500updates_random_starts_arm004/student10d/checkpoints/adapter_{000..500}.npz` | 9 checkpoints |
 
-Evaluation loads only `params/` and `assets/` of an OpenPI checkpoint (`policy_config.create_trained_policy`); `train_state/` holds optimizer moments, used only to resume training.
+Evaluation loads only `params/` and `assets/` of an OpenPI checkpoint (`policy_config.create_trained_policy`). The teachers' `train_state/` (optimizer moments) was deleted on 2026-11-03; more training from a teacher starts from `params/` with a fresh optimizer.
 
 ## 2. Teacher training (aims)
 
