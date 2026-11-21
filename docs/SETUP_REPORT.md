@@ -1,6 +1,6 @@
 # Setup report: 2026-10-23
 
-Everything below was actually run on `xulab` (`/mnt/data/users/bbouri/IRL-project`). Nothing is claimed that was not
+Everything below was actually run on `xulab` (repository root). Nothing is claimed that was not
 executed. No continual-learning algorithm has been started. Git history is local (no remote):
 `fbbae19` → `db16617` → `cf529ff` → `9917279` → (this report's commit).
 
@@ -20,7 +20,7 @@ executed. No continual-learning algorithm has been started. Git history is local
 
 ```bash
 # audit
-ssh xulab 'hostname; cat /etc/os-release; nproc; free -g; nvidia-smi; df -h /mnt/data /; which git uv docker; ...'
+ssh xulab 'hostname; cat /etc/os-release; nproc; free -g; nvidia-smi; df -h <data disk> /; which git uv docker; ...'
 # Phase 0/1: code + envs
 git clone --recurse-submodules https://github.com/Physical-Intelligence/openpi.git third_party/openpi   # 215abfb
 (cd third_party/openpi && GIT_LFS_SKIP_SMUDGE=1 uv sync)                                                 # policy env, 2 min
@@ -67,7 +67,7 @@ Not tested: training and fine-tuning code (out of scope at this stage).
 ## 4. Checkpoint identity
 
 `gs://openpi-assets/checkpoints/pi05_libero`, OpenPI config `pi05_libero`, at
-`/mnt/data/users/bbouri/cache/openpi/openpi-assets/checkpoints/pi05_libero`. It has 16 files (12.44 GB) and lock
+`$OPENPI_DATA_HOME/openpi-assets/checkpoints/pi05_libero`. It has 16 files (12.44 GB) and lock
 fingerprint `cd22f6becde68e647885fb9beb54a6a8fc296b117d87b6de03dea9d53dd07fee`. All files match GCS MD5. Bundled norm
 stats `assets/physical-intelligence/libero/norm_stats.json` are used as-is.
 
@@ -76,7 +76,7 @@ stats `assets/physical-intelligence/libero/norm_stats.json` are used as-is.
 Official LIBERO HDF5 from `https://huggingface.co/datasets/yifengzhu-hf/LIBERO-datasets` at
 `f13aa24a3da8c43c7225569f28c562979fa0e35a`. This is the HF source added to LIBERO's own downloader upstream; the
 pinned LIBERO code points to the equivalent UT Box zip. License: CC BY 4.0. It is reused at
-`/mnt/data/users/bbouri/cl/data/libero/libero_90`, and all 90 files are sha256-verified against the HF API.
+`$LIBERO_DATA_ROOT/libero_90`, and all 90 files are sha256-verified against the HF API.
 
 Frozen sequence (manifest v1.0.0), LIBERO-90 indices in order: **78, 84, 16, 56, 35, 42, 28, 3, 89, 63** (names,
 instructions and rationale in `docs/EXPERIMENT_PROTOCOL.md` §3).

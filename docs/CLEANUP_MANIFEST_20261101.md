@@ -6,7 +6,7 @@ Duplicate gradient dumps were compared array by array (dtype, shape, bytes) firs
 
 Rerun note: `task10b_compare.py` and `task10c_inventory.py` read the deleted `p3_b_*` files. Rerunning them needs those repeats regenerated with `task10b.py`. Their saved outputs (`task10b/analysis.json`, `task10c/inventory.json`) are retained.
 
-## Deleted on xulab (`/mnt/data/users/bbouri/IRL-project`)
+## Deleted on xulab (repository root)
 
 | Path | Class | Why safe | Bytes | sha256 prefix |
 |---|---|---|---|---|
@@ -53,7 +53,7 @@ Rerun note: `task10b_compare.py` and `task10c_inventory.py` read the deleted `p3
 | `tests/ogpo_port/__pycache__/test_sde_transition.cpython-311-pytest-8.3.5.pyc` | cache | Python bytecode, regenerated on import | 39600 | `a079ad21ba767a15` |
 | `tests/ogpo_port/__pycache__/test_sde_transition.cpython-311.pyc` | cache | Python bytecode, regenerated on import | 27902 | `ea690cba84ee509a` |
 
-## Deleted on aims (`~/IRL-project`)
+## Deleted on aims (repository root)
 
 | Path | Class | Why safe | Bytes |
 |---|---|---|---|

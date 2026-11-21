@@ -1,6 +1,9 @@
 """LoRA student for the single-task OPD pilot: pi05_libero with `gemma_300m_lora` on the action expert only; Gemma 2B and SigLIP unadapted.
 Trainable: expert LoRA leaves and the action projections and time MLP, which have no LoRA form. lora_b starts at zero and lora_a from a fixed seed, so every student starts identical and equal to the base function.
 Forward parameters are BF16, as in OpenPI inference; FP32 masters live with the optimizer.
+Full student (continual learning, `full=True`): plain `gemma_300m` expert; every action-expert leaf (the `_1` leaves of the
+LLM, 430M with the adaRMS norms) plus the projections and time MLP trains, starting from the base values, so it too starts
+equal to the base function. Gemma 2B and SigLIP stay frozen in both modes.
 """
 
 from __future__ import annotations
@@ -11,22 +14,40 @@ HEADS = ("action_in_proj/", "action_out_proj/", "time_mlp_in/", "time_mlp_out/")
 LORA_A_STD = 0.01
 
 
-def student_config():
+def student_config(full=False):
     from openpi.models import pi0_config
 
-    return pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False, paligemma_variant="gemma_2b", action_expert_variant="gemma_300m_lora")
+    return pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False, paligemma_variant="gemma_2b", action_expert_variant="gemma_300m" if full else "gemma_300m_lora")
 
 
 def is_trainable(key: str) -> bool:
     return "lora" in key or key.startswith(HEADS)
 
 
-def shapes():
+def is_expert(key: str) -> bool:
+    """Action-expert leaf of the shared LLM: OpenPI suffixes the second expert's modules with `_1`."""
+    return "/llm/" in key and "_1" in key.split("/llm/", 1)[1]
+
+
+def is_trainable_full(key: str) -> bool:
+    return is_expert(key) or key.startswith(HEADS)
+
+
+def shapes(full=False):
     import jax
     from flax import nnx, traverse_util
 
-    model = nnx.eval_shape(student_config().create, jax.random.key(0))
+    model = nnx.eval_shape(student_config(full).create, jax.random.key(0))
     return {k: v.shape for k, v in traverse_util.flatten_dict(nnx.split(model)[1].to_pure_dict(), sep="/").items()}
+
+
+def initial_full(base_params_path: str) -> dict:
+    """FP32 copy of the base model's action expert, projections and time MLP: the full student's starting master."""
+    from flax import traverse_util
+    from openpi.models import model as _model
+
+    base = traverse_util.flatten_dict(_model.restore_params(base_params_path, restore_type=np.ndarray), sep="/")
+    return {k: np.asarray(v, np.float32) for k, v in sorted(base.items()) if is_trainable_full(k)}
 
 
 def initial_adapter(base_params_path: str, seed: int = 7) -> dict:
@@ -45,19 +66,27 @@ def initial_adapter(base_params_path: str, seed: int = 7) -> dict:
     return out
 
 
-def build_student_model(base_model, adapter: dict):
-    """Frozen leaves are the base model's own arrays."""
+def is_full_adapter(adapter: dict) -> bool:
+    """A full-student master has expert leaves and no LoRA leaves."""
+    return not any("lora" in k for k in adapter) and any(is_expert(k) for k in adapter)
+
+
+def build_student_model(base_model, adapter: dict, full=None):
+    """Frozen leaves are the base model's own arrays. `full` defaults to what the adapter's keys say."""
     import jax.numpy as jnp
     from flax import nnx, traverse_util
 
+    full = is_full_adapter(adapter) if full is None else full
     flat = traverse_util.flatten_dict(nnx.split(base_model)[1].to_pure_dict(), sep="/")
     params = {k: v for k, v in flat.items() if not k.startswith(HEADS)}
+    if full:
+        assert set(adapter) == {k for k in flat if is_trainable_full(k)}, "full master does not cover exactly the expert leaves"
     params.update({k: jnp.asarray(v).astype(jnp.bfloat16) for k, v in adapter.items()})
-    return student_config().load(traverse_util.unflatten_dict(params, sep="/"))
+    return student_config(full).load(traverse_util.unflatten_dict(params, sep="/"))
 
 
 def build_student_policy(conf, adapter) -> object:
-    """The official policy with its model replaced: same transforms, same norm stats."""
+    """The official policy with its model replaced: same transforms, same norm stats. LoRA or full, from the file's keys."""
     from clvla.ogpo.pi05_sde_policy import model_of
     from clvla.policy import load_official_policy
     from openpi.shared import nnx_utils

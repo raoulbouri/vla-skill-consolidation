@@ -1,6 +1,6 @@
 # OPD experiment registry (teachers, OPD pilots, diagnostics)
 
-Written 2026-11-02. Covers every training run and experiment on `aims` (`/usr1/home/bbouri/IRL-project`) and `xulab` (`/mnt/data/users/bbouri/IRL-project`) from 2026-10-29 on. Earlier work: `docs/SETUP_REPORT.md` (baseline), `docs/TASK10_11_SUMMARY.md` and `tests/ogpo_port/README.md` (OGPO port, Tasks 5-11). aims and xulab cannot reach each other; files move through the Mac only when small.
+Written 2026-11-02. Covers every training run and experiment on `aims` and `xulab` (one checkout of this repository on each) from 2026-10-29 on. Earlier work: `docs/SETUP_REPORT.md` (baseline), `docs/TASK10_11_SUMMARY.md` and `tests/ogpo_port/README.md` (OGPO port, Tasks 5-11). aims and xulab cannot reach each other; files move through the Mac only when small.
 
 ## 1. Checkpoints to keep for downstream evaluation
 

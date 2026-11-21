@@ -27,8 +27,7 @@ import numpy as np
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-_CANDIDATES = [os.environ.get("OGPO_SRC"), str(Path.home() / "IRL-project-refs/OGPO_public"),
-               "/mnt/data/users/bbouri/IRL-project-refs/OGPO_public"]
+_CANDIDATES = [os.environ.get("OGPO_SRC")]  # set in .env (see .env.example)
 OGPO_SRC = next((Path(c) for c in _CANDIDATES if c and (Path(c) / "ogpo").is_dir()), Path("/nonexistent"))
 PG_HELPER = OGPO_SRC / "ogpo/agents/modules/pg_helper.py"
 OGPO_FUNCS = ("flow_score_from_velocity", "sde_drift_correction", "sample_flow_actions_ode")

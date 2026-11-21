@@ -6,7 +6,7 @@ re-implementation on CPU (`tmp/ogpo_toy_check.py`, git-ignored, run in our polic
 
 | Item | Value |
 |---|---|
-| OGPO repo | https://github.com/simchowitzlabpublic/OGPO_public, shallow clone at `/mnt/data/users/bbouri/IRL-project-refs/OGPO_public` |
+| OGPO repo | https://github.com/simchowitzlabpublic/OGPO_public, shallow clone at `$OGPO_SRC` (set in `.env`) |
 | OGPO commit | `0b3be413cde766a41257c6b19c0c2b06393a557f` (2026-06-06T18:28:17Z) |
 | Paper | arXiv 2605.03065 v4 (2026-06-26), "OGPO: Sample Efficient Full-Finetuning of Generative Control Policies"; read through the arXiv HTML render, whose equation text is partly garbled (noted where it matters) |
 | Our OpenPI | `third_party/openpi` @ `215abfb217dbac7d5f1273282331b9b1866c0479` (2026-08-24) |

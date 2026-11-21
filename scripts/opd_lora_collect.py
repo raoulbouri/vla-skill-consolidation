@@ -27,13 +27,14 @@ ROOT = Path(__file__).resolve().parents[1]
 class RewardEnv:
     """Also records the diagnostics' geometry after every step and attaches the current snapshot to each policy request as `_snap` (the trainer strips it before inference)."""
 
-    def __init__(self, env, joint):
+    def __init__(self, env, joint, geometry=True):
         self.env, self.reward, self.joint, self.door_min = env, 0.0, joint, 0.0
-        self.geo = Geometry(env)
+        self.geo = Geometry(env) if geometry else None
 
     def reset(self):
         self.reward, self.door_min = 0.0, 0.0
-        self.geo.rows = []
+        if self.geo is not None:
+            self.geo.rows = []
         return self.env.reset()
 
     def set_init_state(self, s):
@@ -42,8 +43,9 @@ class RewardEnv:
     def step(self, a):
         o, r, d, i = self.env.step(a)
         self.reward += float(r)
-        self.door_min = min(self.door_min, float(self.env.env.sim.data.get_joint_qpos(self.joint)))
-        self.geo.rows.append(np.concatenate([self.geo.snapshot(), np.asarray(a, np.float64)]))
+        if self.geo is not None:
+            self.door_min = min(self.door_min, float(self.env.env.sim.data.get_joint_qpos(self.joint)))
+            self.geo.rows.append(np.concatenate([self.geo.snapshot(), np.asarray(a, np.float64)]))
         return o, r, d, i
 
 
@@ -52,7 +54,7 @@ class SnapClient:
         self.client, self.geo = client, geo
 
     def __call__(self, request):
-        return self.client({**request, "_snap": self.geo.snapshot().tolist()})
+        return self.client(request if self.geo is None else {**request, "_snap": self.geo.snapshot().tolist()})
 
 
 def main():
@@ -63,6 +65,7 @@ def main():
     ap.add_argument("--random-starts", action="store_true")
     ap.add_argument("--arm-noise", type=float, default=0.0)
     ap.add_argument("--door-joint", default="microwave_1_microjoint")
+    ap.add_argument("--geometry", default="microwave", choices=("microwave", "none"), help="none: no handle/door probe (tasks other than t35); the trainer then uses time-quarter phases")
     a = ap.parse_args()
     cfg = load_experiment_config(ROOT / "configs/experiment.yaml")
     rt = resolve_tasks(load_manifest(cfg.resolve(cfg.task_manifest)))[a.position]
@@ -73,7 +76,7 @@ def main():
         inits = {i: np.asarray(f["data"]["demo_%d" % i]["states"][0]) for i in train}
         held_states = np.stack([np.asarray(f["data"]["demo_%d" % i]["states"][0]) for i in held])
     train_grip = np.stack([inits[i][8:10] for i in train]).mean(axis=0)
-    env = RewardEnv(make_libero_env(rt.bddl_path, cfg.simulator.camera_resolution, cfg.simulator.env_seed), a.door_joint)
+    env = RewardEnv(make_libero_env(rt.bddl_path, cfg.simulator.camera_resolution, cfg.simulator.env_seed), a.door_joint, a.geometry == "microwave")
     client = RemotePolicy("127.0.0.1", a.port, cfg.policy.action_dim, cfg.policy.replan_steps)
     while True:
         msg = client._client.infer({"_ctl": "next"})
@@ -101,7 +104,7 @@ def main():
         assert min_l2 > 1e-3, "training start coincides with a held-out start"
         t0 = time.time()
         r = run_episode(env, SnapClient(client, env.geo), start, rt.spec.instruction, max_steps=cfg.simulator.max_steps, num_steps_wait=cfg.simulator.num_steps_wait, replan_steps=cfg.policy.replan_steps, resize_size=cfg.policy.resize_size, dummy_action=cfg.simulator.dummy_action)
-        client._client.infer({"_ctl": "done", "success": bool(r.success), "steps": int(r.steps), "calls": int(r.policy_calls), "reward": float(env.reward), "error": r.error, "seconds": time.time() - t0, "door_min": env.door_min, "start_sha": hashlib.sha256(start.tobytes()).hexdigest()[:16], "start_min_l2_to_held_out": min_l2, "arm_offset_max": arm_offset_max, **geo_summary(env.geo.rows, cfg.simulator.num_steps_wait)})
+        client._client.infer({"_ctl": "done", "success": bool(r.success), "steps": int(r.steps), "calls": int(r.policy_calls), "reward": float(env.reward), "error": r.error, "seconds": time.time() - t0, "door_min": env.door_min, "start_sha": hashlib.sha256(start.tobytes()).hexdigest()[:16], "start_min_l2_to_held_out": min_l2, "arm_offset_max": arm_offset_max, **(geo_summary(env.geo.rows, cfg.simulator.num_steps_wait) if env.geo is not None else {})})
 
 
 if __name__ == "__main__":

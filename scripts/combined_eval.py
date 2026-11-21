@@ -67,6 +67,7 @@ def main():
     ap.add_argument("--profile", default="n25")
     ap.add_argument("--door-joint")
     ap.add_argument("--geometry", action="store_true", help="also log handle distance, contact and door onset (opd_diag_rollout.Geometry); does not change the episode")
+    ap.add_argument("--video-dir", help="also write each episode's agent-view frames (one per policy call) as <dir>/<policy>_p<pos>_<mode>_s<state>_<result>.mp4; does not change the episode")
     a = ap.parse_args()
     out = Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -96,7 +97,7 @@ def main():
                 env.clear()
                 n_lat = len(client.latencies_s)
                 t0 = time.time()
-                r = run_episode(env, client, inits[state], rt.spec.instruction, max_steps=cfg.simulator.max_steps, num_steps_wait=wait, replan_steps=cfg.policy.replan_steps, resize_size=cfg.policy.resize_size, dummy_action=cfg.simulator.dummy_action)
+                r = run_episode(env, client, inits[state], rt.spec.instruction, max_steps=cfg.simulator.max_steps, num_steps_wait=wait, replan_steps=cfg.policy.replan_steps, resize_size=cfg.policy.resize_size, dummy_action=cfg.simulator.dummy_action, record_frames=bool(a.video_dir))
                 acts = np.stack(env.actions[wait:]) if len(env.actions) > wait else np.zeros((0, 7))
                 lat = client.latencies_s[n_lat:]
                 row = {"policy_id": a.policy_id, "position": pos, "libero_90_index": rt.spec.libero_90_index, "task": rt.spec.name, "mode": mode, "state": state, "env_seed": env_seed, "noise_seed": seed, "success": bool(r.success), "reward_sum": float(sum(env.rewards)), "steps": int(r.steps), "termination": "error" if r.error else ("success" if r.success else "timeout"), "error": r.error, "replans": int(r.policy_calls),
@@ -105,6 +106,13 @@ def main():
                     from opd_diag_rollout import summary as geo_summary
 
                     row.update({"geo_" + k: v for k, v in geo_summary(env.geo.rows, wait).items()})
+                if a.video_dir and r.frames:
+                    import imageio
+
+                    Path(a.video_dir).mkdir(parents=True, exist_ok=True)
+                    row["video"] = str(Path(a.video_dir) / f"{a.policy_id}_p{pos}_{mode}_s{state}_{'success' if r.success else 'failure'}.mp4")
+                    fr = [np.asarray(x).repeat(2, 0).repeat(2, 1) for x in r.frames]
+                    imageio.mimwrite(row["video"], fr + fr[-1:] * 8, fps=8, macro_block_size=16)
                 with out.open("a") as f:
                     f.write(json.dumps(row) + "\n")
                 print(row["policy_id"], pos, mode, state, row["success"], row["steps"], round(row["runtime_s"], 1), flush=True)
