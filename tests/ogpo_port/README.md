@@ -6,7 +6,7 @@
 
 CPU-only checks that OGPO's flow math (`simchowitzlabpublic/OGPO_public` @ `0b3be413cde766a41257c6b19c0c2b06393a557f`) maps
 onto OpenPI pi0.5 conventions. Run: `CUDA_VISIBLE_DEVICES= scripts/py-policy -m pytest tests/ogpo_port -q -p no:cacheprovider`
-(OGPO clone: `$OGPO_SRC`, else `~/IRL-project-refs/OGPO_public`, else the xulab refs path).
+(OGPO clone: set `OGPO_SRC` in `.env`; without it the comparison test is skipped).
 
 | Task | File | Status | Verified |
 |---|---|---|---|
@@ -123,8 +123,8 @@ expected analytical path KL; 4. additivity of the 35/35/250 group contributions.
   bf16 computation. Latent states and transition quantities are fp32 from that point on.
 
 | 7 | `test_pi05_path_logprob.py` (+ `src/clvla/ogpo/pi05_path_logprob.py`, helper `pi05_real_env.py`) | closed 2026-10-30, FROZEN (15 pass, xulab GPU 1) | exact unnormalised path log-prob of frozen Task 6 chains: init + all 10 transitions, 320 dims; vs float64 reference within fp32 summation-error bound; recomputed means == sampler means bitwise; identical-policy ratio exactly 1; grads only to expert/heads, zero w.r.t. the stored chain |
-- FROZEN (Task 7): `src/clvla/ogpo/pi05_path_logprob.py`, `test_pi05_path_logprob.py`, `pi05_real_env.py` (hashes: xulab
-  `/tmp/frozen_task5_7.sha256`, together with the Task 5/6 files).
+- FROZEN (Task 7): `src/clvla/ogpo/pi05_path_logprob.py`, `test_pi05_path_logprob.py`, `pi05_real_env.py` (hashes: a temporary
+  hash file on xulab, since lost, together with the Task 5/6 files).
 - Qualification (error bound): 16 * eps32 * sum_i |a_i| is a SUMMATION-ERROR bound (fp32 reduction over the per-coordinate
   terms). It does not model rounding in the per-coordinate subtraction, division, squaring or logarithm, so it is not a
   rigorous end-to-end fp32 error bound. Measured errors were <= 6.5% of it.
@@ -138,7 +138,7 @@ expected analytical path KL; 4. additivity of the 35/35/250 group contributions.
   predicted variance 2 E[K] = 104.5, empirical 112.8). KL share on padded dims 78-83% (log it; do not mask). The perturbation
   scale was fixed from a one-off pilot; KL ~ 50 is a test magnitude, not a training target. Training-gradient estimator
   (pathwise vs score-function) is a separate task: these value checks say nothing about it.
-- FROZEN (Task 8): `src/clvla/ogpo/pi05_path_kl.py`, `test_pi05_path_kl.py` (hashes: xulab `/tmp/frozen_task5_8.sha256`).
+- FROZEN (Task 8): `src/clvla/ogpo/pi05_path_kl.py`, `test_pi05_path_kl.py` (hashes: a temporary hash file on xulab, since lost).
 - Qualification (fixture): the 20% relative perturbation of `action_out_proj/kernel` is a validation fixture. It gives a useful
   nonzero KL; it is not evidence of a realistic teacher-student initialisation gap or an appropriate training scale.
 - Qualification (padded dims): padded dimensions contribute 78-83% of the reported KL, executed dimensions 6-10%. This is not a
@@ -174,4 +174,4 @@ expected analytical path KL; 4. additivity of the 35/35/250 group contributions.
 - Task 10D-v3 calibration 2 (2026-11-01; UNCOUNTED, consumed seeds 10000 and 14000 only; `task10d_v3_cal.py`, `outputs/ogpo_port/task10d/v3/calibration2/seed_<seed>.json`, log `logs/task10dv3_cal2_20261101T183136Z.log`): INCONCLUSIVE, method not justified for preregistration; no v3 preregistration written, seed 15000 and held-out seeds unused. 36-point geometric grid 5e-4 to 3e-3, M2 and M4 fitted, six-block omission. Errors M2/M4 (seed 10000; seed 14000): full 0.010/0.020%; 0.008/0.024%. Check A 0.017/0.033%; 0.042/0.094%. Check B state 0.122/0.242%; 0.099/0.186%, with M2-M4 0.119%; 0.087%, largest block shift M2 0.174%; 0.113%, M4 0.281%; 0.209%, lag-1 +0.82; +0.74 (signed error negative on 10000, positive on 14000). Detached 0.270/0.532%; 0.041/0.039%. Random heads (12 points 0.05-0.5) 0.36%; 1.46% M2, above 0.1%. Random all scaled 6.4e-8; 3.3e-8, within 1e-5. Kernel (supplementary) 0.23%; 0.026% M2. The M2-M4 and block limits of 0.1% of AD were provisional. Omitting the smallest-h block removes most of the state M2 error on both seeds; this was seen after the fact and selects nothing.
 - Task 11 (2026-11-01; `task11_synthetic.py`, `task11_real.py`, `task11_followup.py`, results `outputs/ogpo_port/task11/`, logs `logs/task11_*`): readiness audit, no training run. Task 10 stays inconclusive, unchanged. Synthetic (d=3, K=5, 8 seeds, up to 1e6 samples each): pathwise, sf, sf_loo, rtg, akl unbiased against the closed form; local-reward and analytic-KL-without-explicit-term controls detected as biased. Real fixture (pi05_libero teacher, Task 8 perturbed student, not a fine-tuned teacher), BF16 jit: sampled ratio vs analytic KL, 2048 fresh chains per observation, z 0.47, 0.95, 1.27 (limit 3 fixed before that run; the first 256 chains gave z -2.60 on obs 0); identical parameters exactly 0; routing: student trainable nonzero, student VLM, teacher trainable and teacher VLM exactly zero, each in its own derivative (a two-group derivative ran out of memory). Gradient noise on one observation, 32 chains: split-half cosine sf -0.069, sf_loo -0.019, rtg -0.012, akl 0.022, pathwise 0.874. One step on a temporary copy, 16 paired chains: sf_loo h=3e-3 dK +0.037 +- 0.054; pathwise h=3e-3 dK -0.948 +- 0.068. BF16 cast kept only about 1e-4 of the entries changed (effective step 0.0021-0.0022 of nominal 0.003; 0.0004 of 0.001), so an FP32 master copy is required. No environment rollout or reward update was run. Fine-tuned teachers exist only on aims and are untested in this harness.
 - Minimal Flow-OPD Stage 3 (2026-11-01; `scripts/opd_stage3.py`, `outputs/opd_stage3/20261101T235006Z_t035/`): one teacher-only pathwise update on a temporary FP32 master, t35, teacher `lora-25demos-s500`, 8 student observations from one Stage 2 episode, 32 trajectories. Program KL gap 0.026% (gate 1%). Fresh paired noise, 128 pairs: KL 661.19 to 650.76, difference -10.43, 95% CI [-13.46, -7.40] over observation means; random-direction control +0.03. BF16 forward step norm 0.0427 vs master 0.0045, cosine 0.107 with the negative gradient. Same 8 observations; no environment success evaluated; Task 10 stays inconclusive.
-- FROZEN (Tasks 5-9): hashes in `outputs/ogpo_port/frozen_task5_9.sha256`. It replaces `/tmp/frozen_task5_8.sha256`, lost when xulab rebooted on 2026-10-30; the Task 5-8 hashes were re-established against the independent aims copies (all 9 identical).
+- FROZEN (Tasks 5-9): hashes in `outputs/ogpo_port/frozen_task5_9.sha256`. It replaces the temporary Task 5-8 hash file, lost when xulab rebooted on 2026-10-30; the Task 5-8 hashes were re-established against the independent aims copies (all 9 identical).

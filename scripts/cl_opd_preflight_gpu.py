@@ -38,7 +38,7 @@ ROOT = Path(__file__).resolve().parents[1]
 import os  # noqa: E402
 
 SHARED = os.environ.get("PREFLIGHT_SHARED") == "1"  # a GPU other users are on: FP32 sums on the host, no big test allocations
-PROC = Path("/mnt/data/users/bbouri/IRL-project-data/processed/libero90_aligned256_v1/hdf5")
+PROC = Path(os.environ["CLVLA_PROCESSED_ROOT"]) / "libero90_aligned256_v1" / "hdf5"  # from .env (scripts/py-policy sources env.sh)
 FULL = "outputs/cl_opd/full_20261108T214604Z"
 NOREP = "outputs/cl_opd/t063_noreplay_20261109T150326Z"
 INIT = f"{FULL}/k0_t035/student/checkpoints/adapter_400.npz"

@@ -141,8 +141,8 @@ oauthlib==3.2.2
 omegaconf==2.3.0
 opencv-python==4.11.0.86
 opencv-python-headless==4.11.0.86
--e file:///mnt/data/users/bbouri/IRL-project/third_party/openpi
--e file:///mnt/data/users/bbouri/IRL-project/third_party/openpi/packages/openpi-client
+-e file://$CLVLA_ROOT/third_party/openpi
+-e file://$CLVLA_ROOT/third_party/openpi/packages/openpi-client
 opt-einsum==3.4.0
 optax==0.2.4
 orbax-checkpoint==0.11.13

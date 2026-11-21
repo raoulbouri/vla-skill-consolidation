@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Start scripts/train_teachers_parallel.sh detached, with the W&B API key taken from STDIN (never from the command
 # line, a file or a log). Run it from the machine that holds the key, e.g.:
-#   grep '^WANDB_API_KEY=' ~/Developer/wandb.env | cut -d= -f2- | ssh aims 'bash ~/IRL-project/scripts/launch_training_wandb.sh SPEC [SPEC ...]'
+#   <print your W&B key> | ssh <gpu host> 'bash <repo>/scripts/launch_training_wandb.sh SPEC [SPEC ...]'
 # The key is checked with W&B before anything starts; only the log path is printed.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

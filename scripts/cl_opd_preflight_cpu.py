@@ -19,7 +19,7 @@ import numpy as np
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-PROC = Path("/mnt/data/users/bbouri/IRL-project-data/processed/libero90_aligned256_v1/hdf5")
+PROC = Path(os.environ["CLVLA_PROCESSED_ROOT"]) / "libero90_aligned256_v1" / "hdf5"  # from .env (scripts/py-policy sources env.sh)
 RUNS = {"t035 (task 0)": "outputs/cl_opd/full_20261108T214604Z/k0_t035/student", "t063 replay": "outputs/cl_opd/full_20261108T214604Z/k1_t063/student",
         "t063 no-replay": "outputs/cl_opd/t063_noreplay_20261109T150326Z/k1_t063/student"}
 TRAIN_DEMOS = range(25)  # profile n25: demo_0..24 train; demo_25..49 held out, never read here

@@ -6,7 +6,9 @@ We study sequential imitation learning from the open-source **π₀.₅-LIBERO**
 
 **Checkpoints and results:** Hugging Face [`raoulb091602/vla-skill-consolidation`](https://huggingface.co/raoulb091602/vla-skill-consolidation) (see [Weights and results](#weights-and-results-on-hugging-face)).
 
-## Status (2026-11-03)
+**New here (person or coding agent)?** Read [`AGENTS.md`](AGENTS.md) first (rules and where everything is), then [Setup](#setup) and [Continual learning](#continual-learning-across-tasks-cl-opd).
+
+## Status (2026-11-21)
 
 | Done | Result |
 |---|---|
@@ -18,6 +20,8 @@ We study sequential imitation learning from the open-source **π₀.₅-LIBERO**
 | Diagnostics of that failure | Main cause: the student rarely reaches the handle (12/40 vs base 38/40); from teacher states it finishes 19/20 at the 75% point |
 | Two-phase curriculum without replay (teacher-controlled warm-start, then on-policy OPD) | Warm-start worked (update-100 student moves the door in 22/40 development episodes); student-driven Phase 2 lost it (no contact after about update 150), stopped at update 247 |
 | **Default distillation: warm-start, then student rollouts with a per-phase replay buffer** (`scripts/opd_distill.sh`) | **Student matches the teacher on held-out demo_10..49: 26/40 vs 24/40 ODE, 22/40 vs 20/40 SDE (teacher minus student -0.05, CI [-0.20, 0.10]); base 1/40** |
+| Continual learning across 5 tasks (t035 → t063 → t042 → t003 → t016): full 430M action-expert student, per-task LoRA teachers, fixed-size old-task replay buffer (`scripts/cl_opd_run.py`) | Task 0 (t035): 24/25 held-out. Task 1 (t063) with replay: t035 kept (25/25), t063 0/25 (student success collapsed after a gradient spike near update 148). Without replay: t063 13/25, t035 forgotten (0/25) |
+| Analysis of the t063 failure: per-trajectory gradients, per-trajectory clipping (`--traj-clip-k`, off by default), pre-flight diagnostics | One fresh t063 student trajectory carries 99.8% of each spike update; clipping validated offline (`docs/cl_opd/`). Next experiments: `docs/cl_opd/README.md` |
 
 Every run, path and number: `docs/OPD_EXPERIMENT_REGISTRY.md`. OGPO derivations and decisions: `tests/ogpo_port/README.md`, `docs/OGPO_AUDIT.md`.
 
@@ -25,11 +29,14 @@ Every run, path and number: `docs/OPD_EXPERIMENT_REGISTRY.md`. OGPO derivations 
 
 ```bash
 git clone --recursive https://github.com/raoulbouri/vla-skill-consolidation.git && cd vla-skill-consolidation
-cp .env.example .env                                     # set the paths in .env
+cp .env.example .env                                     # set the paths in .env (every machine-specific path lives there)
 bash scripts/setup_envs.sh                               # pinned OpenPI + official LIBERO, two uv envs
 scripts/py-policy -c "from openpi.shared import download; download.maybe_download('gs://openpi-assets/checkpoints/pi05_libero')"   # base checkpoint, 12.4 GB, public
 scripts/py-policy -m pytest tests/unit                   # CPU unit tests (policy env)
+sha256sum -c tests/ogpo_port/frozen_task5_9.sha256       # frozen OGPO modules unchanged
 ```
+
+No path in the repository is specific to one machine: storage locations come from `.env`, and everything else is relative to the repository root. `outputs/` must be at the repository root; on a small disk, make it a symlink to a large one.
 
 - Two environments: `scripts/py-policy` (OpenPI, Python 3.11) and `scripts/py-sim` (LIBERO simulator, Python 3.8). Details, LIBERO-90 download and the test stages: `docs/SETUP.md`, `docs/ASSETS.md`.
 - Processed data (aligned HDF5 + LeRobot, about 17 GB) is not uploaded; rebuild it with `bash scripts/prepare_data_overnight.sh` (set `CLVLA_SPLIT_PROFILE=n10` or `n25`).
@@ -38,7 +45,7 @@ scripts/py-policy -m pytest tests/unit                   # CPU unit tests (polic
 
 ## Weights and results on Hugging Face
 
-Model repo: <https://huggingface.co/raoulb091602/vla-skill-consolidation> (private for now; ask Raoul for access). Weights are stored as plain files at the paths the scripts expect, so download them into the repository root; the base π₀.₅-LIBERO checkpoint is not included (public, see Setup). `outputs/`, `checksums/` and `results/` are git-ignored.
+Model repo: <https://huggingface.co/raoulb091602/vla-skill-consolidation> (public: no login or token is needed to download). Weights are stored as plain files at the paths the scripts expect, so download them into the repository root; the base π₀.₅-LIBERO checkpoint is not included (public, see Setup). `outputs/`, `checksums/` and `results/` are git-ignored.
 
 | Part | Size | Repo path |
 |---|---|---|
@@ -49,7 +56,6 @@ Model repo: <https://huggingface.co/raoulb091602/vla-skill-consolidation> (priva
 
 ```bash
 cd vla-skill-consolidation                                   # repository root
-huggingface-cli login                                         # once, with a token that can read the repo
 R=raoulb091602/vla-skill-consolidation
 huggingface-cli download $R --local-dir . --include "outputs/opd_*" "outputs/stage1_stage2_combined/*" "checksums/*"      # part 1
 huggingface-cli download $R --local-dir . --include "outputs/teacher_deltas/expert300m-10demos-s250/*"                    # part 3, one variant (or "outputs/teacher_deltas/*")
@@ -120,6 +126,48 @@ Result of the run that defined this recipe (Phase 2 continued the warm-start run
 
 The pathwise gradient compile needs about 120 GiB of host RAM and about 21 GB of GPU memory with the simulator (a 32 GB GPU works; 61 GB of host RAM does not); evaluation with three policy servers needs about 29 GB.
 
+## Continual learning across tasks (CL-OPD)
+
+One student learns five LIBERO-90 tasks in sequence, each from its own frozen LoRA teacher (`teacher-n25-s500`), with the t35 recipe above per task plus replay of earlier tasks. Every choice is in `configs/cl_opd.yaml`; `scripts/cl_opd_run.py` reads nothing else.
+
+- **Student:** the whole action expert (430M, `student: full`); Gemma 2B and SigLIP stay frozen. Task k starts from task k-1's final weights.
+- **Per task (400 updates):** updates 1-100 the teacher drives (successful episodes only), 101-400 the student drives (4 episodes per update) with the task's own per-phase replay (8 observations per update).
+- **Old tasks:** every update adds 40 observations from a fixed-size buffer (4000 states shared by all finished tasks), each labelled by its own task's teacher; loss `L = 0.5 mean(L_new) + 0.5 mean(L_old)`. After each task its teacher-driven episodes are admitted to the buffer.
+- **Evaluation:** after each task, every task trained so far plus the next one on the 25 held-out starts demo_25..49 → `matrix.json` (success matrix, forgetting, forward transfer).
+- **Per-trajectory clipping** (`per_task.traj_clip_k`, off when absent or 0): scales any trajectory whose gradient exceeds k times the median of its group (fresh, replay, old) in the batch; the global clip stays. With it off the trainer is bit-identical to the version that produced the runs above.
+
+### Run it
+
+```bash
+# 1. Demonstrations: the 5 tasks' official LIBERO-90 files (CC BY 4.0), then the aligned 256 px re-render
+scripts/py-policy -c "
+import json, os; from huggingface_hub import hf_hub_download as d
+L = json.load(open('configs/dataset.lock.json')); repo = L['repo'].split('/datasets/')[1]
+for n in ('KITCHEN_SCENE7_open_the_microwave', 'LIVING_ROOM_SCENE4_stack_the_left_bowl_on_the_right_bowl_and_place_them_in_the_tray', 'KITCHEN_SCENE9_put_the_frying_pan_under_the_cabinet_shelf', 'KITCHEN_SCENE10_put_the_butter_at_the_back_in_the_top_drawer_of_the_cabinet_and_close_it', 'KITCHEN_SCENE2_stack_the_black_bowl_at_the_front_on_the_black_bowl_in_the_middle'):
+    d(repo, f'libero_90/{n}_demo.hdf5', repo_type='dataset', revision=L['revision'], local_dir=os.environ['LIBERO_DATA_ROOT'])"
+CLVLA_PREP_IDX="35 63 42 3 16" CLVLA_SPLIT_PROFILE=n25 bash scripts/prepare_data_overnight.sh   # needs a GPU for EGL rendering
+# 2. Teachers (5 x 210 MB, sha256-checked) at the paths the config names
+scripts/py-policy scripts/fetch_cl_assets.py
+# 3. Check the wiring without a GPU, then the 5-task smoke run (minutes per task), then the real run, task by task
+DRYRUN=1 scripts/py-policy scripts/cl_opd_run.py --config configs/cl_opd.yaml --run outputs/cl_opd/dry --task 1 --dry-run
+bash scripts/cl/smoke.sh
+for K in 0 1 2 3 4; do bash scripts/cl/run_task.sh $K || break; done        # about 10 GPU-hours per task
+```
+
+`scripts/cl/` holds the launchers (`run_task.sh`, `smoke.sh`, `resume_check.sh`, `t063_noreplay.sh`); each documents its options at the top. They take the GPU from `GPUQ_GPU` (set by a scheduler) or `CLVLA_GPU` and refuse to start if the frozen OGPO modules changed. A run is resumable: rerun the same task index after an interruption.
+
+**A variant** = a copy of `configs/cl_opd.yaml` under a new name (for example `configs/cl_opd_<variant>.yaml`, with its own `name:`), run with `CL_CONFIG=configs/cl_opd_<variant>.yaml bash scripts/cl/run_task.sh K`. It gets its own run directory and pointer; the driver refuses to continue a run whose config changed.
+
+**Hardware** (measured): one GPU with at least 32 GB (the full student peaks at about 22-24 GiB plus the simulator; `gpu_mem_fraction: 0.92` of a 32 GB card; 24 GB cards do not fit), about 120 GiB of host RAM for the pathwise-gradient compile, about 1.7 GB of disk per checkpoint (4 kept per task) and about 10 GB per task in total.
+
+**Results so far, analysis and next steps:** `docs/cl_opd/README.md`. W&B logging is a separate step (`scripts/cl_opd_wandb.py`); set `wandb.project` in your config to a project you can write to.
+
+## Collaborating
+
+- Work on a branch (or a fork), open a pull request into `main`; keep `main` runnable.
+- New experiment = new config + new run directory + a preregistration of its thresholds (`docs/OPD_*_PREREGISTRATION.json` are examples). Never overwrite or edit an earlier run's outputs.
+- Weights and results go to the Hugging Face repo at the same relative paths as under `outputs/`, with a `checksums/*.SHA256SUMS` file.
+
 ## Rules we keep
 
 - Held-out evaluation states (demo_10..49 for n10, demo_25..49 for n25) are never used for training or checkpoint selection; reserved seeds 12000-12007, 13000-13007 and 15000 stay unused.
@@ -128,4 +176,4 @@ The pathwise gradient compile needs about 120 GiB of host RAM and about 21 GB of
 
 ## Layout
 
-`src/clvla/` (config, data, policy adapter, evaluation, training, `ogpo/` flow-policy likelihood and KL), `scripts/` (data, training, evaluation, OPD, diagnostics, curriculum), `tests/{unit,integration,ogpo_port}/`, `configs/` (frozen `experiment.yaml`, `task_manifest.yaml`, dataset and training specs), `docs/`, `third_party/openpi` (pinned submodule with the official LIBERO). Large assets and outputs live outside git (`.gitignore`, `.env.example`).
+`src/clvla/` (config, data, policy adapter, evaluation, training, `ogpo/` flow-policy likelihood and KL, `cl_opd/` continual-learning buffer, sampler, matrix and clipping rule), `scripts/` (data, training, evaluation, OPD, diagnostics, curriculum; `cl_opd_*.py` and `cl/` for continual learning), `tests/{unit,integration,ogpo_port}/`, `configs/` (frozen `experiment.yaml`, `task_manifest.yaml`, dataset and training specs), `docs/`, `third_party/openpi` (pinned submodule with the official LIBERO). Large assets and outputs live outside git (`.gitignore`, `.env.example`).

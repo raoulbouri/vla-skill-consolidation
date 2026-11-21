@@ -58,8 +58,8 @@ assets: $L/assets
 EOF
 
 # 5. Record exact environments
-(cd "$OPENPI_DIR" && VIRTUAL_ENV="$OPENPI_DIR/.venv" uv pip freeze) > "$ROOT/env/policy-env.freeze.txt"
-(cd "$OPENPI_DIR" && VIRTUAL_ENV="$OPENPI_DIR/examples/libero/.venv" uv pip freeze) > "$ROOT/env/sim-env.freeze.txt"
+(cd "$OPENPI_DIR" && VIRTUAL_ENV="$OPENPI_DIR/.venv" uv pip freeze) | sed "s#file://$ROOT/#file://\$CLVLA_ROOT/#" > "$ROOT/env/policy-env.freeze.txt"
+(cd "$OPENPI_DIR" && VIRTUAL_ENV="$OPENPI_DIR/examples/libero/.venv" uv pip freeze) | sed "s#file://$ROOT/#file://\$CLVLA_ROOT/#" > "$ROOT/env/sim-env.freeze.txt"
 cp "$OPENPI_DIR/uv.lock" "$ROOT/env/openpi-uv.lock"
 "$CLVLA_POLICY_PY" --version; "$CLVLA_SIM_PY" --version
 echo "[setup] done. Next: scripts/py-policy scripts/validate_assets.py"

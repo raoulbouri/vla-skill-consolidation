@@ -10,10 +10,11 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 source "$ROOT/env.sh"
 cd "$ROOT"
 VERSION=libero90_aligned256_v1
-IDX=(78 84 16 56 35 42 28 3 89 63)
+IDX=(${CLVLA_PREP_IDX:-78 84 16 56 35 42 28 3 89 63})   # CLVLA_PREP_IDX="35 63 42 3 16": only the continual-learning tasks
 PROFILE="${CLVLA_SPLIT_PROFILE:-}"   # e.g. n25: convert ONLY that split profile (default: the protocol 0-44 / 45-49 split)
 SUFFIX="${PROFILE:+.$PROFILE}"
 PROFILE_ARGS=(); [ -n "$PROFILE" ] && PROFILE_ARGS=(--split-profile "$PROFILE")
+VERIFY_ARGS=(); [ -n "${CLVLA_PREP_IDX:-}" ] && VERIFY_ARGS=(--indices "$(tr -s " " , <<<"$CLVLA_PREP_IDX")")
 log() { echo "[prepare_data $(date -u +%H:%M:%SZ)] $*"; }
 trap 'log "FAILED (exit $?) near line $LINENO; fix the cause, remove any leftover *.partial / half-written dataset for the failing task, then rerun this script (finished tasks are skipped)"' ERR
 
@@ -47,5 +48,5 @@ done
 log "sealing version manifest"
 nice -n 10 "$ROOT/scripts/py-sim" scripts/rerender_demos.py --finalize
 log "verifying LeRobot datasets (${PROFILE:-protocol})"
-nice -n 10 "$ROOT/scripts/py-policy" scripts/verify_lerobot_datasets.py "${PROFILE_ARGS[@]/--split-profile/--profile}"
+nice -n 10 "$ROOT/scripts/py-policy" scripts/verify_lerobot_datasets.py "${PROFILE_ARGS[@]/--split-profile/--profile}" "${VERIFY_ARGS[@]}"
 log "ALL DONE"

@@ -28,7 +28,7 @@ definitions are identical.
 | Source | `gs://openpi-assets/checkpoints/pi05_libero` (public, anonymous GCS via gcsfs) |
 | OpenPI config | `pi05_libero` (`Pi0Config(pi05=True, action_horizon=10)`, trained 30k steps from `pi05_base` on `physical-intelligence/libero`) |
 | Download | `openpi.shared.download.maybe_download` (OpenPI's supported mechanism), 2026-10-22, 399 s |
-| Local path | `$OPENPI_DATA_HOME/openpi-assets/checkpoints/pi05_libero` = `/mnt/data/users/bbouri/cache/openpi/openpi-assets/checkpoints/pi05_libero` |
+| Local path | `$OPENPI_DATA_HOME/openpi-assets/checkpoints/pi05_libero` |
 | Size | 16 files, 12.44 GB (JAX/orbax OCDBT `params/` + `assets/`) |
 | Lock | `configs/checkpoint.lock.json`: size + sha256 of every file |
 | Fingerprint | `cd22f6becde68e647885fb9beb54a6a8fc296b117d87b6de03dea9d53dd07fee` (sha256 over the lock; recorded in every run's metadata) |
@@ -55,7 +55,7 @@ refuses any other checkpoint URI or config).
 | Canonical source | LIBERO's own download script. Pinned LIBERO code points to the UT Box `libero_100` zip (LIBERO-90 + LIBERO-10). Upstream LIBERO `master` adds `--use-huggingface`, which downloads https://huggingface.co/datasets/yifengzhu-hf/LIBERO-datasets (published by LIBERO co-author Yifeng Zhu) |
 | Revision | `f13aa24a3da8c43c7225569f28c562979fa0e35a` (= HF `main` on 2026-10-22) |
 | License / access | LIBERO README: datasets CC BY 4.0 (HF card tag: apache-2.0); public, not gated |
-| Local path | `$LIBERO_DATA_ROOT/libero_90/` = `/mnt/data/users/bbouri/cl/data/libero/libero_90/`: 90 files, 66.66 GB. Reused read-only from the earlier CL-benchmark download (2026-10-04, `snapshot_download`, same repo/revision) instead of downloading a second copy |
+| Local path | `$LIBERO_DATA_ROOT/libero_90/`: 90 files, 66.66 GB. On the original machine it was reused read-only from an earlier download (2026-10-04, `snapshot_download`, same repo/revision) instead of downloading a second copy |
 | Lock | `configs/dataset.lock.json`: size + LFS sha256 of all 90 files, taken from the **HF API** at the pinned revision (independent of the local copy) |
 | Format | robomimic-style HDF5: `data/demo_<i>/{actions (T,7) f64, obs/agentview_rgb (T,128,128,3) u8, obs/eye_in_hand_rgb, obs/ee_states (T,6), obs/gripper_states (T,2), obs/ee_pos, obs/ee_ori, obs/joint_states (T,7), states (T,77) MuJoCo, robot_states (T,9), rewards, dones}`; `data.attrs.problem_info.language_instruction`; images in OpenGL orientation (`macros_image_convention: opengl`) |
 | Coverage | every LIBERO-90 task has exactly 50 demos (lengths 58–373 steps) whose stored instruction equals the benchmark instruction, plus 50 official init states |
@@ -101,8 +101,8 @@ manifest against it offline.
 
 | What | Path |
 |---|---|
-| OpenPI downloads | `/mnt/data/users/bbouri/cache/openpi` (`OPENPI_DATA_HOME`) |
-| uv packages / Pythons | `/mnt/data/users/bbouri/cache/uv`, `/mnt/data/users/bbouri/cache/uv-python` |
-| Hugging Face | `/mnt/data/users/bbouri/cache/hf` (`HF_HOME`) |
+| OpenPI downloads | `$OPENPI_DATA_HOME` |
+| uv packages / Pythons | `$UV_CACHE_DIR`, `$UV_PYTHON_INSTALL_DIR` |
+| Hugging Face | `$HF_HOME` |
 | Run artifacts | `outputs/{baseline,smoke,finetune,continual,asset_validation}/` (git-ignored) |
 | Logs | `logs/` (git-ignored) |

@@ -24,3 +24,4 @@ wandb/
 # Downloaded from the Hugging Face model repo (see README)
 checksums/
 results/
+.cache/
