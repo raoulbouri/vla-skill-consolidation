@@ -43,6 +43,9 @@ from flax import nnx, traverse_util
 from openpi.serving import websocket_policy_server
 from openpi.shared import nnx_utils
 from opd_lora_student import HEADS, build_student_model, initial_adapter, initial_full, is_expert, is_trainable, is_trainable_full, load_delta_teacher
+# traj-clip begin
+from clvla.cl_opd.traj_clip import TrajClip, source_class
+# traj-clip end
 
 ROOT = Path(__file__).resolve().parents[1]
 cfg = sde.SDEConfig()
@@ -57,6 +60,86 @@ for name, (r_, c_) in pkl.GROUPS.items():
     MASKS[name] = m_
 GEO_KEYS = ("min_dist", "first_near", "first_contact", "contact_steps", "door_onset")
 PHASES = ("approach", "precontact", "contact", "opening", "late")
+# traj-clip begin
+
+
+def _leaf_check(stats, keys, group):
+    """Per-leaf (sum of squares, sum) of one trajectory gradient -> (fingerprint vector, squared norm by parameter group)."""
+    st = jax.device_get(stats)
+    sq = {}
+    for k in keys:
+        sq[group(k)] = sq.get(group(k), 0.0) + float(st[k][0])
+    return np.array([float(st[k][i]) for k in keys for i in (0, 1)], np.float64), sq
+
+
+def clip_pass2(clip, recompute, leaf_stats, leaf_dots, keys, group, full, acc, acc_old):
+    """Per-trajectory clipping, pass 2 (rule in clvla.cl_opd.traj_clip). Recomputes every trajectory with s_i < 1 and
+    returns the correction d = sum_i a_i (s_i - 1) g_i (device sums in full mode), so that g_clipped = g + d, plus the
+    exact inner products <g_i, g> and <g_i, d> of the two top trajectories (largest a_i |g_i| and a_i s_i |g_i|) for
+    their influence. Each recomputed gradient is compared with pass 1 (fingerprint and norm)."""
+    t0 = time.perf_counter()
+    plan = clip.plan()
+    d, checks = None, []
+
+    def check(i, gh):
+        fp, sq = _leaf_check(leaf_stats(gh), keys, group)
+        n1, n2 = clip.norm[i], sum(sq.values()) ** 0.5
+        checks.append({"i": i, "bitwise": bool(np.array_equal(fp, clip.fp[i])), "norm_rel": abs(n2 - n1) / max(n1, 1e-30)})
+
+    for i in plan["todo"]:
+        j, m, _ = clip.meta[i]
+        gh = recompute(j, m)
+        check(i, gh)
+        if d is None:
+            d = {k: (jnp.zeros(jnp.shape(gh[k]), jnp.float32) if full else np.zeros(np.shape(gh[k]), np.float32)) for k in keys}
+        c = clip.coef(i)
+        for k in keys:
+            d[k] = d[k] + c * (gh[k].astype(jnp.float32) if full else np.asarray(gh[k]).astype(np.float32))
+        del gh
+    t1 = time.perf_counter()
+    is_old = clip.cls == "old"
+    a_new = float(clip.a[~is_old][0])
+    a_old = float(clip.a[is_old][0]) if is_old.any() else 0.0
+
+    def sdot(x, y):
+        return sum(float(v) for v in jax.device_get(leaf_dots(x, y)).values())
+
+    infl = {}
+    for i in dict.fromkeys((clip.top(False), clip.top(True))):
+        j, m, _ = clip.meta[i]
+        gh = recompute(j, m)
+        check(i, gh)
+        g_gu = a_new * sdot(gh, acc) + (a_old * sdot(gh, acc_old) if a_old else 0.0)
+        infl[i] = {"g_gu": g_gu, "g_d": sdot(gh, d) if d is not None else 0.0}
+        del gh
+    return d, {"checks": checks, "infl": infl, "seconds_pass2": t1 - t0, "seconds_influence": time.perf_counter() - t1}
+
+
+def clip_finish(clip, g_u, gn_u, gr_u, d, info, dot, by, keys):
+    """g_clipped = g + d on the host (FP32, the array the optimizer receives), its norms, and the logged clipping row."""
+    if d is not None:
+        d_h = {k: np.asarray(d[k], np.float32) for k in keys}
+        g_c = {k: np.asarray(g_u[k] + d_h[k], np.float32) for k in keys}
+        corr = by(d_h)
+        del d_h
+        gn = dot(g_c, g_c) ** 0.5
+        cos = dot(g_u, g_c) / (gn_u * gn)
+        gr = by(g_c)
+    else:
+        g_c, gn, gr, cos, corr = g_u, gn_u, gr_u, 1.0, {n: 0.0 for n in gr_u}
+    row = clip.stats(gn_u, gn)
+    row.update({"grad_norm_unclipped": gn_u, **{f"grad_unclipped_{n}": v for n, v in gr_u.items()}, **{f"clip_correction_{n}": v for n, v in corr.items()},
+                "clip_norm_ratio": gn / gn_u, "clip_angle_deg": float(np.degrees(np.arccos(np.clip(cos, -1.0, 1.0))))})
+    for tag, i in (("unclipped", clip.top(False)), ("clipped", clip.top(True))):
+        f, c = info["infl"][i], clip.cls[i]
+        row.update({f"clip_top_{tag}_class": str(c), f"clip_top_{tag}_norm_over_class_median": float(clip.norm[i] / np.median(clip.norm[clip.cls == c])),
+                    f"clip_top_{tag}_scale": float(clip.s[i]), f"clip_top_{tag}_infl_before": clip.a[i] * f["g_gu"] / gn_u**2,
+                    f"clip_top_{tag}_infl_after": clip.a[i] * clip.s[i] * (f["g_gu"] + f["g_d"]) / gn**2})
+    ch = info["checks"]
+    row.update({"clip_recomputed": len(ch), "clip_recompute_bitwise": all(c["bitwise"] for c in ch), "clip_recompute_norm_rel_max": max((c["norm_rel"] for c in ch), default=0.0),
+                "clip_seconds_norms": info.get("seconds_norms", 0.0), "clip_seconds_pass2": info["seconds_pass2"], "clip_seconds_influence": info["seconds_influence"]})
+    return g_c, gn, gr, row
+# traj-clip end
 
 
 def phase_of(snap):
@@ -278,6 +361,9 @@ def main():
     ap.add_argument("--record-dir", help="write every step of successful teacher-driven episodes here")
     ap.add_argument("--state-every", type=int, default=0, help="save the full training state every N updates (0: only at --stop-after)")
     ap.add_argument("--ckpt-at", default=",".join(map(str, CKPT_AT)), help="updates whose weights are kept")
+# traj-clip begin
+    ap.add_argument("--traj-clip-k", type=float, default=0.0, help="per-trajectory gradient clipping at k x the median norm of the trajectory's source class (fresh / replay / old) in the current batch, before the loss-weighted mean; 0: off (clvla.cl_opd.traj_clip)")
+# traj-clip end
     a = ap.parse_args()
     full = a.student_mode == "full"
     ckpt_at = {int(x) for x in a.ckpt_at.split(",") if x}
@@ -338,6 +424,13 @@ def main():
     R["student_phase"] = {"rollouts_per_update": a.rollouts_per_update, "chains_per_obs": a.chains_per_obs, "replay_per_update": a.replay_per_update, "replay_capacity_per_phase": a.replay_capacity, "replay_seed": a.replay_seed, "stop_contact_rate": a.stop_contact_rate, "stop_window": a.stop_window, "stop_min_episodes": a.stop_min_episodes}
     if full or a.old_buffer or a.geometry != "microwave":
         R["identity"].update(student_mode=a.student_mode, init_master=a.init_master, geometry=a.geometry)
+# traj-clip begin
+    if a.traj_clip_k:
+        R["identity"]["traj_clip_k"] = a.traj_clip_k
+        R["traj_clip"] = {"k": a.traj_clip_k, "classes": "fresh / replay / old", "threshold": "k x median per-trajectory norm of the class in the current batch", "norm": "all trainable parameters",
+                          "passes": "pass 1 unclipped sums + norms; pass 2 recomputes the clipped trajectories and adds a_i (s_i - 1) g_i", "global_clip": CLIP, "per_update_arrays": "clip/update_UUU.npz"}
+        (out / "clip").mkdir(exist_ok=True)
+# traj-clip end
     old = None
     if a.old_buffer and a.old_per_update:
         st_f = out / "state" / "old_sampler.json"
@@ -393,6 +486,11 @@ def main():
 
     jp_s, jp_t, j_sample, j_vs, j_vt = jax.jit(s_prefix), jax.jit(t_prefix), jax.jit(sample_), jax.jit(vel_s_), jax.jit(vel_t_)
     j_grad, j_det = jax.jit(jax.value_and_grad(obj, has_aux=True)), jax.jit(jax.grad(obj_det))
+# traj-clip begin
+    if a.traj_clip_k:
+        j_leaf_stats = jax.jit(lambda g: {k: (jnp.vdot(g[k].reshape(-1).astype(jnp.float32), g[k].reshape(-1).astype(jnp.float32)), jnp.sum(g[k].astype(jnp.float32))) for k in keys})
+        j_leaf_dots = jax.jit(lambda x, y: {k: jnp.vdot(x[k].reshape(-1).astype(jnp.float32), y[k].reshape(-1).astype(jnp.float32)) for k in keys})
+# traj-clip end
     jt_act = nnx_utils.module_jit(teacher.sample_actions)
     old_fns = {}  # teacher variant -> (prefix, objective gradient) with the teacher's state as an argument: one compile per teacher architecture
     # keyed by the variant name, not the graphdef: a LoRA graphdef holds list/dict module attributes and is unhashable
@@ -638,6 +736,10 @@ def main():
             do_det = u % DIRECT_EVERY == 0
             kls, gaps, chain_rel, finite, s_rms, t_rms, errs = [], [], [], True, [], [], []
             np.savez_compressed(out / "batches" / f"update_{u:03d}.npz", events=np.array(idx), demo=np.array([d for d, _, _ in runs]), controller=state_box["controller"], phases=np.array([str(p) for p in sel_phase]), sources=np.array([s.get("source", state_box["controller"]) for s in sel]), **{f"snap_{j}": s["snap"] for j, s in enumerate(sel) if s["snap"] is not None}, **{f"physical_{j}": s["physical"] for j, s in enumerate(sel) if s["physical"] is not None}, **{f"image_{j}": s["request"]["observation/image"] for j, s in enumerate(sel)}, **{f"wrist_{j}": s["request"]["observation/wrist_image"] for j, s in enumerate(sel)}, **{f"state_{j}": s["request"]["observation/state"] for j, s in enumerate(sel)}, **{f"x0_{j}": s["x0"] for j, s in enumerate(sel)}, **{f"eps_{j}": s["eps"] for j, s in enumerate(sel)}, **{f"chain_{j}": s["chain"] for j, s in enumerate(sel) if s["chain"] is not None})
+            # traj-clip begin
+            clip = TrajClip(a.traj_clip_k, a.old_weight if old is not None else None) if a.traj_clip_k else None
+            t_norms = 0.0
+            # traj-clip end
             for j, ev in enumerate(sel):
                 is_old = j >= n_new
                 if is_old:
@@ -660,6 +762,13 @@ def main():
                     tgt = acc_old if is_old else acc
                     for k in keys:
                         tgt[k] = tgt[k] + (gh[k].astype(jnp.float32) if full else np.asarray(gh[k]).astype(np.float32))
+                    # traj-clip begin
+                    if clip is not None:
+                        t_n = time.perf_counter()
+                        fp_, sq_ = _leaf_check(j_leaf_stats(gh), keys, group)
+                        clip.record(j, m, source_class(j, n_fresh, n_new), sq_, fp_)
+                        t_norms += time.perf_counter() - t_n
+                    # traj-clip end
                     del g, gh
                     parts = kl_parts(aux["vs"], aux["vt"])
                     parts["phase"] = sel_phase[j]
@@ -682,6 +791,25 @@ def main():
                         del gdt
             if u == 0:
                 release("after_first_gradients")
+            # traj-clip begin
+            if clip is not None:
+                def traj_grad(j, m):
+                    """Pass 2: trajectory (j, m)'s gradient, recomputed exactly as in the loop above."""
+                    ev = sel[j]
+                    x0, eps = (ev["x0"], ev["eps"]) if m == 0 else event_noise(seed_ok(450000 + 1000 * u + 10 * j + m), cfg)
+                    if j >= n_new:
+                        gd_o, st_o = old.teachers[ev["old_task"]]
+                        pre_o, grad_o = old_programmes(old.variants[ev["old_task"]], gd_o)
+                        obs_o, _ = model_inputs(policy, ev["request"])
+                        ob, sm, sk = jp_s(s_full, obs_o)
+                        _, tm, tk = pre_o(st_o, obs_o)
+                        return flat(grad_o(theta, st_o, ob, sm, sk, tm, tk, x0, eps)[1])
+                    p = prep[j] if prep is not None else prepare(ev)
+                    return flat(j_grad(theta, p["ob"], p["sm"], p["sk"], p["tm"], p["tk"], x0, eps)[1])
+
+                d_clip, clip_info = clip_pass2(clip, traj_grad, j_leaf_stats, j_leaf_dots, keys, group, full, acc, acc_old)
+                clip_info["seconds_norms"] = t_norms
+            # traj-clip end
             n_traj = n_new * a.chains_per_obs
             n_old_traj = (len(sel) - n_new) * a.chains_per_obs
             if n_old_traj:
@@ -718,6 +846,14 @@ def main():
                 except Exception as e_:  # noqa: BLE001 - recorded; the update gate below requires it
                     R["routing_vlm_nonzero"] = f"{type(e_).__name__}: {str(e_)[:160]}"
                 release("after_vlm_routing")
+            # traj-clip begin
+            if clip is not None:
+                g_m, gn, gr, clip_row = clip_finish(clip, g_m, gn, gr, d_clip, clip_info, dot, by, keys)
+                del d_clip
+                np.savez_compressed(out / "clip" / f"update_{u:03d}.npz", **clip.arrays())
+                dev_ = jax.devices()[0]
+                clip_row["gpu_peak_gib"] = dev_.memory_stats().get("peak_bytes_in_use", 0) / 2**30 if hasattr(dev_, "memory_stats") and dev_.memory_stats() else None
+            # traj-clip end
             # the update: FP32 master on CPU
             with jax.default_device(cpu):
                 gr32 = {k: jax.device_put(np.asarray(g_m[k], np.float32), cpu) for k in keys}
@@ -744,6 +880,10 @@ def main():
                    **({"kl_old": float(np.mean([x["full"] for x in kls if x["old"]])), **{f"kl_old_{t_}": float(np.mean([x["full"] for x in kls if x["old"] == t_])) for t_ in old.buf.state["tasks"] if any(x["old"] == t_ for x in kls)}} if old is not None and n_old_traj else {}),
                    **({f"buf_{k}": v for k, v in replay.sizes().items()} if replay is not None else {}),
                    **{f"kl_{p}": float(np.mean([x["full"] for x in kls if x["phase"] == p and not x["old"]])) if any(x["phase"] == p and not x["old"] for x in kls) else None for p in PHASES}, **{f"act_xyz_{p}": float(np.mean([e["xyz"] for e in errs if e["phase"] == p])) if any(e["phase"] == p for e in errs) else None for p in PHASES}, **{f"n_{p}": sum(x == p for x in sel_phase) for p in PHASES}}
+            # traj-clip begin
+            if clip is not None:
+                row.update(clip_row)
+            # traj-clip end
             metrics.append(row)
             if csv_path.exists() and csv_path.read_text().split("\n", 1)[0] != ",".join(row):
                 csv_path = out / f"training_metrics_from_u{u:03d}.csv"  # a resumed run with new columns gets its own file

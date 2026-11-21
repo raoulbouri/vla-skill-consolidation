@@ -64,6 +64,8 @@ def trainer_cmd(c: dict, run: Path, k: int, phase: int, resume: bool) -> list:
         cmd += ["--init-master", str(prev or "<task k-1 final master>")]
         if o["per_update"]:
             cmd += ["--old-buffer", str(run / "buffer"), "--old-teachers", str(sd / "old_teachers.json"), "--old-per-update", str(o["per_update"]), "--old-weight", str(o["weight"]), "--old-seed", str(o["seed"])]
+    if p.get("traj_clip_k"):
+        cmd += ["--traj-clip-k", str(p["traj_clip_k"])]  # per-trajectory gradient clipping (both phases); absent or 0: off
     if phase == 1:
         cmd += ["--stop-after", str(p["warm_updates"])]
     else:
