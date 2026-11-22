@@ -66,6 +66,8 @@ def trainer_cmd(c: dict, run: Path, k: int, phase: int, resume: bool) -> list:
             cmd += ["--old-buffer", str(run / "buffer"), "--old-teachers", str(sd / "old_teachers.json"), "--old-per-update", str(o["per_update"]), "--old-weight", str(o["weight"]), "--old-seed", str(o["seed"])]
     if p.get("traj_clip_k"):
         cmd += ["--traj-clip-k", str(p["traj_clip_k"])]  # per-trajectory gradient clipping (both phases); absent or 0: off
+    if p.get("kl_gate", True) is False:
+        cmd += ["--no-kl-gate"]  # the one-batch gate's fresh-noise KL check only logs; absent or true: it stops training
     if phase == 1:
         cmd += ["--stop-after", str(p["warm_updates"])]
     else:

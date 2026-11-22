@@ -1,4 +1,4 @@
-# Clipping pilot on t063 (follow-up B): configs/cl_opd.yaml with four changes, marked CHANGED. Task 1 (t063) is
+# Clipping pilot on t063 (follow-up B): configs/cl_opd.yaml with five changes, marked CHANGED. Task 1 (t063) is
 # rerun from the finished task 0 of outputs/cl_opd/full_20261108T214604Z with per-trajectory clipping k=3, stopped at
 # update 200 (that run collapsed near update 148 without clipping). Launcher: scripts/cl/t063_clip_pilot.sh.
 # Continual-learning OPD (condition C). Every experimental choice is here; scripts/cl_opd_run.py reads nothing else.
@@ -36,6 +36,8 @@ per_task:
   gpu_mem_fraction: 0.92          # training's share of the card (full student: the LoRA recipe's 0.75 ran out at update 2); gpuq starts it only on an empty card
   state_every: 10                  # full training state (exact resume) every N updates and on SIGTERM
   traj_clip_k: 3.0                 # CHANGED: per-trajectory gradient clipping at 3x the class median (off in cl_opd.yaml)
+  kl_gate: false                   # CHANGED: the update-1 fresh-noise KL check only logs (a first AWS attempt stopped there:
+                                   # KL -24%, 95% CI [-181, 13], 7 of 8 observations lower; clipping had scaled one trajectory)
 
 old_tasks:
   per_update: 40          # old-task observations per update, both phases

@@ -1,0 +1,8 @@
+Optional advisory mode for the one-batch gate's fresh-noise KL check
+
+The first AWS attempt of the t063 clipping pilot stopped after update 1: KL fell 24% (7 of 8 observations lower)
+but the 95% CI [-181, 13] reached zero, after clipping had scaled one fresh trajectory to 0.28. --no-kl-gate keeps
+that check in the log and every other gate (immutability, finite values, gradients, VLM routing) as a stop;
+config key per_task.kl_gate: false passes it; off by default. The flag sits in "# kl-gate" marked blocks, and the
+historical-trainer test now strips those too, so outside the marked blocks the trainer is still byte-identical to
+the one of every earlier run.

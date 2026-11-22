@@ -125,15 +125,18 @@ def test_k_zero_is_a_no_op():
 
 # trainer integration
 
+MARKED = ("traj-clip", "kl-gate")  # marked blocks added after the historical runs; each is inert at its default
+
+
 def _strip(text):
     out, skip = [], False
     for line in text.split("\n"):
-        if line.strip() == "# traj-clip begin":
-            assert not skip, "nested traj-clip block"
+        if line.strip() in {f"# {m} begin" for m in MARKED}:
+            assert not skip, "nested marked block"
             skip = True
             continue
-        if line.strip() == "# traj-clip end":
-            assert skip, "unbalanced traj-clip block"
+        if line.strip() in {f"# {m} end" for m in MARKED}:
+            assert skip, "unbalanced marked block"
             skip = False
             continue
         if not skip:
@@ -144,10 +147,11 @@ def _strip(text):
 
 def test_trainer_without_clip_blocks_is_the_historical_trainer():
     """Every clipping line sits in a marked block; without them the file is byte-identical to the trainer of the earlier
-    runs, and every block is inert unless --traj-clip-k > 0 (default 0)."""
+    runs, and every block is inert unless --traj-clip-k > 0 (default 0). The kl-gate blocks are inert without --no-kl-gate."""
     src = (ROOT / "scripts" / "opd_lora_train.py").read_text()
     assert hashlib.sha256(_strip(src).encode()).hexdigest() == TRAINER_BEFORE_STAGE2
     assert '"--traj-clip-k", type=float, default=0.0' in src
+    assert '"--no-kl-gate", action="store_true"' in src
 
 
 @pytest.fixture(scope="module")

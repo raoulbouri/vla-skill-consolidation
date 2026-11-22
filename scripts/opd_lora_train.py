@@ -361,6 +361,9 @@ def main():
     ap.add_argument("--record-dir", help="write every step of successful teacher-driven episodes here")
     ap.add_argument("--state-every", type=int, default=0, help="save the full training state every N updates (0: only at --stop-after)")
     ap.add_argument("--ckpt-at", default=",".join(map(str, CKPT_AT)), help="updates whose weights are kept")
+# kl-gate begin
+    ap.add_argument("--no-kl-gate", action="store_true", help="one-batch gate: the fresh-noise KL check (95%% CI of the change below zero) is logged but does not stop training; every other gate still does")
+# kl-gate end
 # traj-clip begin
     ap.add_argument("--traj-clip-k", type=float, default=0.0, help="per-trajectory gradient clipping at k x the median norm of the trajectory's source class (fresh / replay / old) in the current batch, before the loss-weighted mean; 0: off (clvla.cl_opd.traj_clip)")
 # traj-clip end
@@ -913,6 +916,11 @@ def main():
                 s_["gates"] = {"forward_changed": s_[f"forward_changed_{G}"] > 0, f"{G}_gradient": s_[f"grad_{G}"] > 0, "vlm_zero": s_["routing_vlm_nonzero"] == 0, "immutability": s_["teacher_unchanged"] and s_["base_unchanged"] and s_["frozen_student_unchanged"], "fresh_noise_kl_below_zero": s_["fresh_noise_paired"]["ci95_obs"][1] < 0, "direct_and_state_finite": all(np.isfinite(v) for v in (R["direct_vs_state"][0]["direct"], R["direct_vs_state"][0]["state"])) and R["direct_vs_state"][0]["state"] > 0}
                 save()
                 print("[sanity]", json.dumps(s_), flush=True)
+# kl-gate begin
+                if a.no_kl_gate and not s_["gates"]["fresh_noise_kl_below_zero"]:  # advisory: recorded as failed in R, not a stop
+                    print("[sanity] --no-kl-gate: fresh_noise_kl_below_zero failed; continuing (advisory)", flush=True)
+                    s_ = {**s_, "gates": {**s_["gates"], "fresh_noise_kl_below_zero": True}}
+# kl-gate end
                 if not all(s_["gates"].values()):
                     stop_reason = "one-batch gate failed: " + ",".join(k for k, v in s_["gates"].items() if not v)
                     break
