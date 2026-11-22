@@ -1,0 +1,11 @@
+.env
+.git
+outputs
+logs
+data
+tmp
+checksums
+results
+third_party/openpi
+**/__pycache__
+**/*.pyc
