@@ -6,7 +6,7 @@ account-specific; the account's bucket, image repository, role and job requests 
 | File | What |
 |---|---|
 | `Dockerfile` (+ `Dockerfile.dockerignore`) | The image: both environments from `scripts/setup_envs.sh`; unit tests and the frozen-module check run during the build. Build from the repository root: `DOCKER_BUILDKIT=1 docker build -f aws/Dockerfile .` |
-| `entrypoint.sh` | Writes the runtime `.env` (data on the job's storage volume), links `outputs/` to `/opt/ml/checkpoints` (synced to S3 while the job runs), runs the given command |
+| `entrypoint.sh` | Writes the runtime `.env` (data on the job's storage volume), links `outputs/` to a work directory on the job's volume (not `/opt/ml/checkpoints`: SageMaker's upload files there break code that lists a directory it has just written; the job script mirrors metrics, logs and records there every 2 minutes, and the trained task's weights at exit), runs the given command |
 | `clip_pilot_job.sh` | A t063 pilot, picked by its argument: `clip` (default; `scripts/cl/t063_clip_pilot.sh`), `tr` (the trust-region arm, `configs/cl_opd_t063_tr3_u200.yaml`) or `continue` (the clipping pilot from its update-190 state to 400, `scripts/cl/t063_clip_continue.sh`; input channel `pilot` = the pilot run's `k1_t063/`): checks GPU and NVIDIA EGL rendering, downloads its public inputs (OpenPI base checkpoint; teachers and pilot inputs from the Hugging Face repo, sha256-checked), runs it, writes `/opt/ml/model/results.tar.gz` (metrics, logs, evaluation records; no weights) and `monitor.csv` (host RAM and GPU memory every 30 s) |
 
 Job command: `/opt/vla/aws/entrypoint.sh bash aws/clip_pilot_job.sh [clip|tr|continue]`. Instance: `ml.g6e.8xlarge` (1 L40S 48 GB, 256 GiB host

@@ -25,7 +25,16 @@ pack() {
       --exclude='buffer' --exclude='k0_t035' --exclude='state*' "$run" && echo "results: $(du -h /opt/ml/model/results.tar.gz | cut -f1)"
   fi
 }
-trap pack EXIT
+mirror() {   # small result files (metrics, logs, records, markers) to the checkpoint directory, synced to S3 while the job runs
+  ( cd outputs && find cl_opd -type f \( -name "*.csv" -o -name "*.json" -o -name "*.jsonl" -o -name "*.log" -o -name DONE -o -name TRAINED -o -name "LATEST_*" \) \
+      -not -path "*/k0_t035/*" -print0 | xargs -0 -r cp -u --parents -t /opt/ml/checkpoints/outputs ) 2>/dev/null || true
+}
+finish() {   # at exit: the results archive, a last mirror, and the kept weights of the trained task
+  pack; mirror
+  ( cd outputs && find cl_opd -path "*/k1_t063/student/checkpoints/*.npz" -print0 | xargs -0 -r cp -u --parents -t /opt/ml/checkpoints/outputs ) || true
+}
+trap finish EXIT
+( while :; do sleep 120; mirror; done ) &
 
 step "machine (mode $MODE)"
 nvidia-smi --query-gpu=name,memory.total,memory.used,driver_version --format=csv
