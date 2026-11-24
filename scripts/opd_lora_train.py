@@ -46,6 +46,9 @@ from opd_lora_student import HEADS, build_student_model, initial_adapter, initia
 # traj-clip begin
 from clvla.cl_opd.traj_clip import TrajClip, source_class
 # traj-clip end
+# trust-region begin
+from clvla.cl_opd.trust_region import TrustRegion, relative_change
+# trust-region end
 
 ROOT = Path(__file__).resolve().parents[1]
 cfg = sde.SDEConfig()
@@ -140,6 +143,37 @@ def clip_finish(clip, g_u, gn_u, gr_u, d, info, dot, by, keys):
                 "clip_seconds_norms": info.get("seconds_norms", 0.0), "clip_seconds_pass2": info["seconds_pass2"], "clip_seconds_influence": info["seconds_influence"]})
     return g_c, gn, gr, row
 # traj-clip end
+# trust-region begin
+
+
+def tr_step(tr, master, new_np, events, chains, theta, forward, prefix, vel, times, keys):
+    """Backtracking on the proposed master new_np (rule in clvla.cl_opd.trust_region). events: the update's current-task
+    observations; chains: their first noise chains under theta (chain[:, i] is the state at time times[i]); prefix(ev)
+    -> the student prefix (ob, sm, sk), built one observation at a time; vel(th, ob, sm, sk, x, t) -> the student
+    velocity. Returns the master to apply and the logged row."""
+    t0 = time.perf_counter()
+    v_old = [None] * len(events)
+
+    def scaled(s):
+        return new_np if s == 1.0 else {k: (master[k] + np.float32(s) * (new_np[k] - master[k])).astype(np.float32) for k in keys}
+
+    def rel(s):
+        th_c = forward(scaled(s))
+        rs = []
+        for j, ev in enumerate(events):
+            ob, sm, sk = prefix(ev)
+            pts = [(chains[j][:, i], t_) for i, t_ in enumerate(times)]
+            if v_old[j] is None:
+                v_old[j] = np.stack([np.asarray(vel(theta, ob, sm, sk, x, t_), np.float64) for x, t_ in pts])
+            rs.append(relative_change(v_old[j], np.stack([np.asarray(vel(th_c, ob, sm, sk, x, t_), np.float64) for x, t_ in pts])))
+            del ob, sm, sk
+        del th_c
+        return float(np.mean(rs)), float(np.max(rs))
+
+    s, row = tr.search(rel)
+    row.update({"tr_observations": len(events), "tr_seconds": time.perf_counter() - t0})
+    return scaled(s), row
+# trust-region end
 
 
 def phase_of(snap):
@@ -367,6 +401,9 @@ def main():
 # traj-clip begin
     ap.add_argument("--traj-clip-k", type=float, default=0.0, help="per-trajectory gradient clipping at k x the median norm of the trajectory's source class (fresh / replay / old) in the current batch, before the loss-weighted mean; 0: off (clvla.cl_opd.traj_clip)")
 # traj-clip end
+# trust-region begin
+    ap.add_argument("--trust-region-k", type=float, default=0.0, help="action-space trust region: halve the optimizer's parameter step until the mean relative change of the student velocity on the update's current-task observations is <= k x its running median (clvla.cl_opd.trust_region); 0: off")
+# trust-region end
     a = ap.parse_args()
     full = a.student_mode == "full"
     ckpt_at = {int(x) for x in a.ckpt_at.split(",") if x}
@@ -608,6 +645,13 @@ def main():
     saved = json.loads((out / "state" / "state.json").read_text()) if a.resume else {}
     u = saved.get("update", 0)
     assert not a.resume or saved.get("master_sha") == hashlib.sha256(b"".join(master[k].tobytes() for k in keys)).hexdigest(), "resume: master does not match state.json"
+# trust-region begin
+    tr = TrustRegion(a.trust_region_k) if a.trust_region_k else None
+    if tr is not None and a.resume and (out / "state" / "trust_region.json").exists():
+        tr.set_state(json.loads((out / "state" / "trust_region.json").read_text()))
+    if tr is not None:
+        R["trust_region"] = {k_: v_ for k_, v_ in tr.get_state().items() if k_ != "history"}  # r of every update is in its row
+# trust-region end
 
     def save_state():
         """Written to state.tmp, then swapped in, so an interrupted save leaves the previous state intact. Everything a
@@ -624,6 +668,10 @@ def main():
             replay.dump(tmp / "replay.pkl")
         if old is not None:
             (tmp / "old_sampler.json").write_text(json.dumps(old.sampler.get_state()))
+# trust-region begin
+        if tr is not None:
+            (tmp / "trust_region.json").write_text(json.dumps(tr.get_state()))
+# trust-region end
         (tmp / "state.json").write_text(json.dumps({"update": u, "time": time.time(), "episode_contact": episode_contact, "master_sha": hashlib.sha256(b"".join(master[k].tobytes() for k in keys)).hexdigest()}))
         for f in tmp.iterdir():
             with open(f, "rb") as fh:
@@ -743,6 +791,9 @@ def main():
             clip = TrajClip(a.traj_clip_k, a.old_weight if old is not None else None) if a.traj_clip_k else None
             t_norms = 0.0
             # traj-clip end
+            # trust-region begin
+            tr_chains = {}
+            # trust-region end
             for j, ev in enumerate(sel):
                 is_old = j >= n_new
                 if is_old:
@@ -760,6 +811,10 @@ def main():
                     else:
                         (val, aux), g = j_grad(theta, p["ob"], p["sm"], p["sk"], p["tm"], p["tk"], x0, eps)
                     aux = jax.tree.map(np.asarray, aux)
+                    # trust-region begin
+                    if tr is not None and not is_old and m == 0:
+                        tr_chains[j] = aux["chain"]
+                    # trust-region end
                     gh = flat(g)
                     finite = finite and np.isfinite(float(val)) and all(bool(jnp.isfinite(gh[k].astype(jnp.float32)).all()) for k in keys)
                     tgt = acc_old if is_old else acc
@@ -865,6 +920,13 @@ def main():
                 new = optax.apply_updates(mast_jax, updates)
             new_np = {k: np.asarray(new[k]) for k in keys}
             del new, updates, gr32
+            # trust-region begin
+            if tr is not None:
+                js_ = sorted(tr_chains)
+                new_np, tr_row = tr_step(tr, master, new_np, [sel[j] for j in js_], [tr_chains[j] for j in js_], theta, forward,
+                                         lambda ev: jp_s(s_full, model_inputs(policy, ev["request"])[0]), j_vs, cfg.times(), keys)
+                del tr_chains
+            # trust-region end
             theta_new = forward(new_np)
             fn, fo = flat(theta_new), flat(theta)
             eff = {k: np.asarray(fn[k]).astype(np.float64) - np.asarray(fo[k]).astype(np.float64) for k in keys}
@@ -887,6 +949,10 @@ def main():
             if clip is not None:
                 row.update(clip_row)
             # traj-clip end
+            # trust-region begin
+            if tr is not None:
+                row.update(tr_row)
+            # trust-region end
             metrics.append(row)
             if csv_path.exists() and csv_path.read_text().split("\n", 1)[0] != ",".join(row):
                 csv_path = out / f"training_metrics_from_u{u:03d}.csv"  # a resumed run with new columns gets its own file

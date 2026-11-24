@@ -1,0 +1,57 @@
+# Clipping pilot continued (follow-up B): configs/cl_opd_t063_clip3_u200.yaml with total_updates 400 (CHANGED), so the
+# clipped t063 run resumes from its saved state at update 190 and trains on to 400 (the unclipped reference ran 400).
+# Launcher: scripts/cl/t063_clip_continue.sh.
+# Continual-learning OPD (condition C). Every experimental choice is here; scripts/cl_opd_run.py reads nothing else.
+# Change a value, then start a NEW run directory: the driver refuses to continue a run whose config hash differs.
+name: cl-opd-t063-clip3-u400   # CHANGED
+
+# Curriculum order. position = index in configs/task_manifest.yaml (the frozen 10-task sequence).
+# teacher: exported delta directory (scripts/export_teacher_deltas.sh); variant sets the teacher's model config.
+# geometry: "microwave" logs handle distance, contact and door angle (event phases, contact stop rule); "none" uses
+# time quarters as phases. Only t35 has a geometry probe today.
+# Chosen 2026-11-08 from the held-out results on aims (demo_25..49, 25 episodes each; outputs/teacher_eval and
+# outputs/baseline): LoRA 25-demo teachers (teacher-n25-s500) t035 24/25, t063 25/25, t042 21/25, t003 21/25, t016 19/25;
+# base pi0.5 0, 3, 0, 0, 0 of 25. Excluded: t056 and t028 (base already 23/25 and 11/25), t078 (teacher 14/25), t084 and
+# t089 (teacher 18 and 17/25). Order: strongest teacher first. Teachers downloaded from the HF repo (hash-checked).
+tasks:
+  - {id: t035, position: 4, teacher: outputs/teachers/lora-25demos-s500/t035_KITCHEN_SCENE7_open_the_microwave, variant: lora, geometry: microwave}
+  - {id: t063, position: 9, teacher: outputs/teachers/lora-25demos-s500/t063_LIVING_ROOM_SCENE4_stack_the_left_bowl_on_the_right_bowl_and_place_them_in_the_tray, variant: lora, geometry: none}
+  - {id: t042, position: 5, teacher: outputs/teachers/lora-25demos-s500/t042_KITCHEN_SCENE9_put_the_frying_pan_under_the_cabinet_shelf, variant: lora, geometry: none}
+  - {id: t003, position: 7, teacher: outputs/teachers/lora-25demos-s500/t003_KITCHEN_SCENE10_put_the_butter_at_the_back_in_the_top_drawer_of_the_cabinet_and_close_it, variant: lora, geometry: none}
+  - {id: t016, position: 2, teacher: outputs/teachers/lora-25demos-s500/t016_KITCHEN_SCENE2_stack_the_black_bowl_at_the_front_on_the_black_bowl_in_the_middle, variant: lora, geometry: none}
+
+student: full            # full: the whole action expert (430M) trains; lora: the earlier LoRA student
+profile: n25             # the teachers' split: training demos demo_0..24; held-out demo_25..49
+
+per_task:
+  warm_updates: 100       # Phase 1: the teacher drives (successful episodes only)
+  total_updates: 400      # Phase 1 + Phase 2 (student drives)
+  rollouts_per_update: 4  # Phase 2 episodes per update
+  chains_per_obs: 1
+  current_replay_per_update: 8     # the task's own per-phase buffer (t35 recipe)
+  current_replay_capacity: 1000    # per phase
+  arm_noise: 0.04
+  stop_contact_rate: 0.05          # applied only to tasks with geometry: microwave
+  checkpoint_updates: [100, 200, 300, 400]   # weights kept for analysis (full student: 1.7 GB each)
+  gpu_mem_fraction: 0.92          # training's share of the card (full student: the LoRA recipe's 0.75 ran out at update 2); gpuq starts it only on an empty card
+  state_every: 10                  # full training state (exact resume) every N updates and on SIGTERM
+  traj_clip_k: 3.0                 # CHANGED: per-trajectory gradient clipping at 3x the class median (off in cl_opd.yaml)
+  kl_gate: false                   # CHANGED: the update-1 fresh-noise KL check only logs (a first AWS attempt stopped there:
+                                   # KL -24%, 95% CI [-181, 13], 7 of 8 observations lower; clipping had scaled one trajectory)
+
+old_tasks:
+  per_update: 40          # old-task observations per update, both phases
+  weight: 0.5             # L = (1 - w) mean(L_new) + w mean(L_old)
+  buffer_total: 4000      # transitions shared by all finished tasks (fixed total)
+  min_gap: 2              # query steps between two buffered states of one episode
+  seed: 11
+
+evaluation:
+  states: 25              # held-out demo_25..49
+  modes: ode              # ode, or ode,sde
+  next_task: true         # also evaluate the next, not yet trained task (forward transfer)
+  include_base: true      # base pi0.5 on every task once (forward-transfer reference)
+
+wandb:
+  project: rahulbouri16/IRL-final-project
+  name_pattern: "{method}-{demos}demos-s{steps}-t{idx}"

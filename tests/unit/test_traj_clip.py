@@ -125,7 +125,7 @@ def test_k_zero_is_a_no_op():
 
 # trainer integration
 
-MARKED = ("traj-clip", "kl-gate")  # marked blocks added after the historical runs; each is inert at its default
+MARKED = ("traj-clip", "kl-gate", "trust-region")  # marked blocks added after the historical runs; each is inert at its default
 
 
 def _strip(text):
@@ -152,6 +152,7 @@ def test_trainer_without_clip_blocks_is_the_historical_trainer():
     assert hashlib.sha256(_strip(src).encode()).hexdigest() == TRAINER_BEFORE_STAGE2
     assert '"--traj-clip-k", type=float, default=0.0' in src
     assert '"--no-kl-gate", action="store_true"' in src
+    assert '"--trust-region-k", type=float, default=0.0' in src
 
 
 @pytest.fixture(scope="module")

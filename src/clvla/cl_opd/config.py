@@ -33,6 +33,7 @@ def check(c: dict):
     assert all(0 < u <= p["total_updates"] for u in p["checkpoint_updates"])
     assert p.get("traj_clip_k", 0) == 0 or p["traj_clip_k"] >= 1.0, "traj_clip_k: 0 (off) or a multiplier >= 1 of the class median"
     assert p.get("kl_gate", True) in (True, False), "kl_gate: true (default) or false"
+    assert p.get("trust_region_k", 0) == 0 or p["trust_region_k"] >= 1.0, "trust_region_k: 0 (off) or a multiplier >= 1 of the running median"
     assert 0.0 <= o["weight"] < 1.0 and o["per_update"] >= 0 and o["buffer_total"] > 0
     assert c["evaluation"]["modes"] in ("ode", "sde", "ode,sde")
 
