@@ -132,7 +132,11 @@ def train(c, run, k, gpu, dry) -> bool:
         print(f"[train] task {k} Phase 2 ended: {m.get('stop_reason')} (rc {rc}); rerun to resume from the saved state")
         return False
     (sd / "TRAINED").write_text(json.dumps({"completed_updates": m["completed_updates"], "stop_reason": m.get("stop_reason"), "final_master": str(final_master(sd / "student"))}))
-    shutil.rmtree(sd / "student" / "state", ignore_errors=True)  # 5 GB; the run is finished and its final master is kept
+    if os.environ.get("CL_KEEP_FINAL_STATE") == "1" and (sd / "student" / "state").exists():  # keep the last training state (master, optimizer, replay) as state_final
+        shutil.rmtree(sd / "student" / "state_final", ignore_errors=True)
+        (sd / "student" / "state").rename(sd / "student" / "state_final")
+    else:
+        shutil.rmtree(sd / "student" / "state", ignore_errors=True)  # 5 GB; the run is finished and its final master is kept
     return True
 
 
